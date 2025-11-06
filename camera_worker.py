@@ -89,8 +89,8 @@ class CameraWorker:
         self.last_face_detected_time: float | None = None
         self.interpolation_start_time: float | None = None
         self.interpolation_start_pose: NDArray[np.float32] | None = None
-        self.face_lost_delay = 2.0  # seconds to wait before starting interpolation
-        self.interpolation_duration = 1.0  # seconds to interpolate back to neutral
+        self.face_lost_delay = 10.0  # seconds to wait before starting interpolation (hold position)
+        self.interpolation_duration = 2.0  # seconds to interpolate back to neutral
 
         # Track state changes
         self.previous_head_tracking_state = self.is_head_tracking_enabled
@@ -333,15 +333,17 @@ class CameraWorker:
                     # Update face tracking offsets EVERY frame with interpolated pitch AND yaw
                     # Face tracking uses ONLY rotations (roll, pitch, yaw), not translations
                     # The Stewart platform achieves target orientation through rotation alone
-                    with self.face_tracking_lock:
-                        self.face_tracking_offsets = [
-                            0.0,  # x translation (not used for face tracking)
-                            0.0,  # y translation (not used for face tracking)
-                            0.0,  # z translation (not used for face tracking)
-                            self._last_roll,
-                            self._current_interpolated_pitch,
-                            self._current_interpolated_yaw,
-                        ]
+                    # ONLY update if NOT in neutral recovery mode (prevents race condition)
+                    if self.interpolation_start_time is None:
+                        with self.face_tracking_lock:
+                            self.face_tracking_offsets = [
+                                0.0,  # x translation (not used for face tracking)
+                                0.0,  # y translation (not used for face tracking)
+                                0.0,  # z translation (not used for face tracking)
+                                self._last_roll,
+                                self._current_interpolated_pitch,
+                                self._current_interpolated_yaw,
+                            ]
 
                     # Time-based sampling: every 0.1 seconds (10 Hz with MediaPipe)
                     should_sample = (current_time - self._last_sample_time) >= 0.1
@@ -363,6 +365,14 @@ class CameraWorker:
 
                     if eye_center is not None:
                         # Face detected - immediately switch to tracking
+
+                        # If recovering to neutral, capture current position to prevent discontinuity
+                        if self.interpolation_start_time is not None:
+                            with self.face_tracking_lock:
+                                # Extract current pitch/yaw from neutral recovery interpolation
+                                self._current_interpolated_pitch = self.face_tracking_offsets[4]
+                                self._current_interpolated_yaw = self.face_tracking_offsets[5]
+
                         self.last_face_detected_time = current_time
                         self.interpolation_start_time = None  # Stop any face-lost interpolation
 
@@ -503,11 +513,16 @@ class CameraWorker:
                                 self.last_face_detected_time = None
                                 self.interpolation_start_time = None
                                 self.interpolation_start_pose = None
-                                # Reset pitch interpolation to neutral
+                                # Reset all tracking state to neutral
                                 self._current_interpolated_pitch = np.deg2rad(0.0)
+                                self._current_interpolated_yaw = np.deg2rad(0.0)
+                                self._last_roll = 0.0  # Reset roll to prevent residual offset
                                 self._pitch_interpolation_target = None
                                 self._pitch_interpolation_start = None
                                 self._pitch_interpolation_start_time = None
+                                self._yaw_interpolation_target = None
+                                self._yaw_interpolation_start = None
+                                self._yaw_interpolation_start_time = None
                         # else: Keep current offsets (within 2s delay period)
 
                     # Debug visualization
@@ -523,8 +538,34 @@ class CameraWorker:
                             cv2.putText(debug_frame, "CENTER", (center_x + 10, center_y - 10),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
+                            # Determine face detection state and recovery action
+                            face_detected_now = (eye_center is not None)
+                            recovery_state = "TRACKING"
+                            recovery_color = (0, 255, 0)  # Green
+                            time_info = ""
+
+                            if not face_detected_now:
+                                if self.last_face_detected_time is None:
+                                    recovery_state = "NEUTRAL"
+                                    recovery_color = (128, 128, 128)  # Gray
+                                else:
+                                    time_since_lost = current_time - self.last_face_detected_time
+                                    if time_since_lost < self.face_lost_delay:
+                                        recovery_state = "GRACE PERIOD"
+                                        recovery_color = (0, 255, 255)  # Yellow
+                                        time_info = f"{time_since_lost:.1f}s / {self.face_lost_delay:.1f}s"
+                                    elif self.interpolation_start_time is not None:
+                                        recovery_state = "INTERPOLATING"
+                                        recovery_color = (0, 165, 255)  # Orange
+                                        elapsed = current_time - self.interpolation_start_time
+                                        progress = min(1.0, elapsed / self.interpolation_duration) * 100
+                                        time_info = f"{progress:.0f}%"
+                                    else:
+                                        recovery_state = "WAITING"
+                                        recovery_color = (128, 128, 128)  # Gray
+
                             # Draw face center if detected
-                            if self._last_face_center is not None:
+                            if self._last_face_center is not None and face_detected_now:
                                 fx, fy = self._last_face_center
                                 # Draw face center point
                                 cv2.circle(debug_frame, (fx, fy), 10, (255, 0, 0), 2)
@@ -561,10 +602,18 @@ class CameraWorker:
                                 cv2.putText(debug_frame, f"Face offset: ({offset_x:+d}, {offset_y:+d}) px",
                                             (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 1)
 
-                            else:
-                                # No face detected
-                                cv2.putText(debug_frame, "NO FACE DETECTED", (20, 40),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+                            # Face detection status (always show)
+                            face_status = f"Face: {'DETECTED' if face_detected_now else 'LOST'}"
+                            face_color = (0, 255, 0) if face_detected_now else (0, 0, 255)
+                            cv2.putText(debug_frame, face_status, (20, 220),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, face_color, 2)
+
+                            # Recovery state (always show)
+                            state_text = f"State: {recovery_state}"
+                            if time_info:
+                                state_text += f" ({time_info})"
+                            cv2.putText(debug_frame, state_text, (20, 250),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, recovery_color, 2)
 
                             # Display tracking status
                             status = "TRACKING ON" if self.is_head_tracking_enabled else "TRACKING OFF"
