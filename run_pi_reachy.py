@@ -1118,6 +1118,59 @@ class PiMCPClient:
                 "error": str(e)
             }, status=500)
 
+    async def handle_speech_motion(self, request):
+        """Handle speech motion playback for pre-generated TTS audio"""
+        try:
+            data = await request.json()
+            audio_file = data.get('audio_file')
+            text = data.get('text', '')
+            duration = data.get('duration', 0)
+
+            if not audio_file or not os.path.exists(audio_file):
+                return web.json_response({
+                    "status": "error",
+                    "error": "Audio file not found"
+                }, status=400)
+
+            print(f"[Speech Motion] Analyzing: {audio_file}")
+
+            # Analyze audio
+            try:
+                analysis = self.speech_analyzer.analyze(audio_file, text)
+                self.speech_offset_player.load_timeline(analysis)
+                audio_start = time.time()
+                self.speech_offset_player.play(audio_start)
+                print(f"[Speech Motion] Playback started for {duration:.2f}s")
+            except Exception as motion_error:
+                print(f"[Speech Motion] Analysis failed: {motion_error}")
+                # Not a fatal error - motion just won't play
+                return web.json_response({
+                    "status": "warning",
+                    "message": "Motion analysis failed, continuing without motion"
+                })
+
+            # Wait for playback duration (motion runs in background thread)
+            await asyncio.sleep(duration)
+
+            # Stop motion playback
+            try:
+                self.speech_offset_player.stop()
+                print(f"[Speech Motion] Playback stopped")
+            except Exception as stop_error:
+                print(f"[Speech Motion] Stop failed: {stop_error}")
+
+            return web.json_response({
+                "status": "success",
+                "message": "Speech motion completed"
+            })
+
+        except Exception as e:
+            print(f"[Speech Motion Error] {e}")
+            return web.json_response({
+                "status": "error",
+                "error": str(e)
+            }, status=500)
+
     async def start_tts_server(self):
         """Start the HTTP server for TTS endpoints"""
         app = web.Application()
@@ -1125,14 +1178,16 @@ class PiMCPClient:
         app.router.add_post('/tts/working', self.handle_tts_working)
         app.router.add_post('/display/update', self.handle_display_update)
         app.router.add_post('/mood/trigger', self.handle_mood_trigger)
+        app.router.add_post('/speech/motion', self.handle_speech_motion)
         
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, 'localhost', 8888)
         await site.start()
         print("[INFO] TTS HTTP endpoints started on localhost:8888")
-        print("  - /tts/conversation: Returns to idle state")  
+        print("  - /tts/conversation: Returns to idle state")
         print("  - /tts/working: Returns to execution state")
+        print("  - /speech/motion: Triggers speech-synchronized motion")
         return runner
     
     async def run(self):
