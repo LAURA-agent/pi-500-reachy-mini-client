@@ -334,7 +334,8 @@ class CameraWorker:
                     # Face tracking uses ONLY rotations (roll, pitch, yaw), not translations
                     # The Stewart platform achieves target orientation through rotation alone
                     # ONLY update if NOT in neutral recovery mode (prevents race condition)
-                    if self.interpolation_start_time is None:
+                    # AND only update if head tracking is enabled (preserves position during speech)
+                    if self.interpolation_start_time is None and self.is_head_tracking_enabled:
                         with self.face_tracking_lock:
                             self.face_tracking_offsets = [
                                 0.0,  # x translation (not used for face tracking)
@@ -404,10 +405,8 @@ class CameraWorker:
                         # Pitch: Use directly from daemon with offset (positive offset = look more down)
                         pitch = rotation[1] + self._pitch_offset
 
-                        # Yaw: Use raw IK result directly (like original conversation app)
-                        # The IK may return world-frame or body-relative depending on implementation
-                        # Original app uses: yaw = -rotation[2] (inverted for mirrored camera)
-                        # We don't invert because our camera isn't mirrored
+                        # Yaw: Use raw IK result directly
+                        # Body-follow rotation compensation handles alignment (moves.py:647-660)
                         yaw = rotation[2]
 
                         # Don't use world-frame target storage

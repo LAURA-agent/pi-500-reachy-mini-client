@@ -25,6 +25,7 @@ suppress_jack_errors()
 import asyncio
 import json
 import subprocess
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -165,7 +166,7 @@ class PiMCPClient:
             head_tracker=self.head_tracker,
             daemon_client=self.daemon_client,
             movement_manager=None,  # Will be linked after MovementManager creation
-            debug_window=True  # Enable debug window for face tracking visualization
+            debug_window=True  # Enable debug window to diagnose face tracking
         )
 
         # Initialize movement manager (100Hz control loop)
@@ -1120,8 +1121,10 @@ class PiMCPClient:
 
     async def handle_speech_motion(self, request):
         """Handle speech motion playback for pre-generated TTS audio"""
+        print(f"[Speech Motion] ===== ENDPOINT CALLED =====")
         try:
             data = await request.json()
+            print(f"[Speech Motion] Received request: audio_file={data.get('audio_file', 'MISSING')}, duration={data.get('duration', 0)}")
             audio_file = data.get('audio_file')
             text = data.get('text', '')
             duration = data.get('duration', 0)
@@ -1134,34 +1137,44 @@ class PiMCPClient:
 
             print(f"[Speech Motion] Analyzing: {audio_file}")
 
-            # Analyze audio
-            try:
-                analysis = self.speech_analyzer.analyze(audio_file, text)
-                self.speech_offset_player.load_timeline(analysis)
-                audio_start = time.time()
-                self.speech_offset_player.play(audio_start)
-                print(f"[Speech Motion] Playback started for {duration:.2f}s")
-            except Exception as motion_error:
-                print(f"[Speech Motion] Analysis failed: {motion_error}")
-                # Not a fatal error - motion just won't play
-                return web.json_response({
-                    "status": "warning",
-                    "message": "Motion analysis failed, continuing without motion"
-                })
+            # Run analysis in thread pool (keeps event loop free for breathing)
+            # BUT wait for it to complete before returning (so audio waits for motion)
+            loop = asyncio.get_event_loop()
+            print(f"[Speech Motion] Starting analysis in thread pool (breathing continues)")
+            analysis = await loop.run_in_executor(None, self.speech_analyzer.analyze, audio_file, text)
 
-            # Wait for playback duration (motion runs in background thread)
-            await asyncio.sleep(duration)
+            # Load timeline (fast, no blocking)
+            self.speech_offset_player.load_timeline(analysis)
+            print(f"[Speech Motion] Timeline ready, motion will start with audio")
 
-            # Stop motion playback
-            try:
+            # Disable face tracking during speech (but preserve current position)
+            print(f"[Speech Motion] Disabling face tracking (preserving current head position)")
+            self.camera_worker.set_head_tracking_enabled(False)
+
+            # DO NOT clear face tracking offsets - preserve them so speech composes on top of current position
+            # self.camera_worker.face_tracking_offsets = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+            # Motion will start when play() is called by audio playback start
+            # For now, we'll start it immediately and let audio sync
+            audio_start = time.time()
+            self.speech_offset_player.play(audio_start)
+
+            # Schedule stop and re-enable face tracking in background
+            async def stop_after_duration():
+                await asyncio.sleep(duration)
                 self.speech_offset_player.stop()
-                print(f"[Speech Motion] Playback stopped")
-            except Exception as stop_error:
-                print(f"[Speech Motion] Stop failed: {stop_error}")
+                # Reset speech offsets to neutral
+                self.movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+                self.camera_worker.set_head_tracking_enabled(True)
+                print(f"[Speech Motion] Stopped after {duration:.2f}s, reset to neutral, face tracking re-enabled")
 
+            asyncio.create_task(stop_after_duration())
+
+            # Return success - motion is ready and playing
             return web.json_response({
                 "status": "success",
-                "message": "Speech motion completed"
+                "message": "Speech motion ready and started",
+                "duration": duration
             })
 
         except Exception as e:
@@ -1731,7 +1744,7 @@ class PiMCPClient:
             
         # Extract model name from wake event source
         if '(' in wake_event_source and ')' in wake_event_source:
-            model_name = wake_event_source.split('(')[1].rstrip(')')
+            model_name = wake_event_source.split('(').rstrip(')')
 
             # Define wake words that should route to Claude Code
             claude_code_wake_words = [
