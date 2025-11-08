@@ -164,15 +164,32 @@ class SpeechOffsetPlayer:
             logger.warning("No pitch contour data, skipping antenna motion")
             return events
 
-        # Pitch range normalization: 160-350 Hz → antenna rotation + head bob
+        # Dynamic pitch normalization: Use actual speaker's pitch range
+        # Extract high-confidence voiced pitch values
+        voiced_pitches = [pitch for pitch, conf in zip(values, confidence) if conf >= 0.5 and pitch > 0]
+
+        if not voiced_pitches:
+            logger.warning("No high-confidence voiced regions, skipping antenna motion")
+            return events
+
+        # Calculate speaker's actual pitch range
+        pitch_min = float(np.percentile(voiced_pitches, 10))  # 10th percentile (ignore outliers)
+        pitch_max = float(np.percentile(voiced_pitches, 90))  # 90th percentile
+        pitch_range = pitch_max - pitch_min
+
+        # If pitch range too narrow (monotone), disable antenna motion
+        if pitch_range < 20.0:  # Less than 20 Hz variation = monotone
+            logger.info(f"Pitch range too narrow ({pitch_range:.1f} Hz), using energy-only motion")
+            return events
+
+        logger.info(f"Dynamic pitch range: {pitch_min:.1f} - {pitch_max:.1f} Hz ({pitch_range:.1f} Hz)")
+
+        # Increased amplitudes for visibility
         # Antenna range: LEFT: 0 to -3 (negative), RIGHT: 0 to +3 (positive)
-        # High pitch (350 Hz) = antennas back
-        # Low pitch (160 Hz) = antennas forward
-        pitch_min = 160.0
-        pitch_max = 350.0
-        antenna_back = 0.8 * mood_scale  # High pitch: antennas tilted back
-        antenna_forward = -0.8 * mood_scale  # Low pitch: antennas tilted forward
-        head_bob_max = 0.005 * mood_scale  # 5mm subtle vertical bob
+        # High pitch = antennas back, Low pitch = antennas forward
+        antenna_back = 1.5 * mood_scale  # High pitch: antennas tilted back (increased from 0.8)
+        antenna_forward = -1.5 * mood_scale  # Low pitch: antennas tilted forward
+        head_bob_max = 0.010 * mood_scale  # 10mm vertical bob (increased from 5mm)
 
         for t, pitch, conf in zip(times, values, confidence):
             # Only use high-confidence voiced regions
@@ -180,14 +197,14 @@ class SpeechOffsetPlayer:
                 antenna_angle = 0.0
                 head_z = 0.0
             else:
-                # Normalize and map to antenna rotation
+                # Normalize and map to antenna rotation using speaker's actual range
                 # High pitch (1.0) = back, Low pitch (0.0) = forward
-                normalized = (pitch - pitch_min) / (pitch_max - pitch_min)
+                normalized = (pitch - pitch_min) / pitch_range
                 normalized = np.clip(normalized, 0.0, 1.0)
                 antenna_angle = antenna_forward + normalized * (antenna_back - antenna_forward)
 
-                # Subtle Z bobbing: low pitch = slightly down, high pitch = slightly up
-                head_z = (normalized - 0.5) * 2.0 * head_bob_max  # Range: -5mm to +5mm
+                # Z bobbing: low pitch = down, high pitch = up
+                head_z = (normalized - 0.5) * 2.0 * head_bob_max  # Range: -10mm to +10mm
 
             events.append({
                 'time': float(t),
@@ -213,9 +230,10 @@ class SpeechOffsetPlayer:
         energy_stats = audio_feat.get('energy_stats', {})
         peak_times = energy_stats.get('peak_times', [])
 
-        # Negative pitch nod: -25 degrees (tilting head up toward user, large visible motion)
-        nod_amplitude = -0.436 * mood_scale  # -25° in radians
-        nod_duration = 0.15  # Hold nod for 150ms (shorter for quicker motion)
+        # Negative pitch nod: -35 degrees (tilting head up toward user, large visible motion)
+        nod_amplitude = -0.611 * mood_scale  # -35° in radians (increased from -25°)
+        nod_duration = 0.4  # Hold nod for 400ms (increased from 150ms for perceptibility)
+        nod_x_forward = 0.010  # 10mm forward movement during nod (increased from 5mm)
 
         for peak_time in peak_times:
             # Sample Z and antenna values from pitch timeline at this moment
@@ -239,10 +257,10 @@ class SpeechOffsetPlayer:
                         antenna_values = pitch_events[i]['antennas']
                     break
 
-            # Nod start (negative pitch = tilt head up, preserve Z and antennas)
+            # Nod start (negative pitch = tilt head up, X forward = lean in, preserve Z and antennas)
             events.append({
                 'time': float(peak_time),
-                'offsets': (0.0, 0.0, z_value, 0.0, nod_amplitude, 0.0),
+                'offsets': (nod_x_forward, 0.0, z_value, 0.0, nod_amplitude, 0.0),
                 'antennas': antenna_values
             })
 
@@ -324,7 +342,7 @@ class SpeechOffsetPlayer:
         """
         # Tilt head up by 4° during last 0.5s of speech
         tilt_start = max(0.0, duration - 0.5)
-        tilt_amplitude = 0.070  # 4° in radians
+        tilt_amplitude = -0.070  # -4° in radians (negative = look up)
 
         events = [
             {'time': tilt_start, 'offsets': (0.0, 0.0, 0.0, 0.0, tilt_amplitude, 0.0), 'antennas': (0.0, 0.0)},

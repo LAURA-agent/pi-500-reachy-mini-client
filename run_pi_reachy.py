@@ -1145,7 +1145,7 @@ class PiMCPClient:
 
             # Load timeline (fast, no blocking)
             self.speech_offset_player.load_timeline(analysis)
-            print(f"[Speech Motion] Timeline ready, motion will start with audio")
+            print(f"[Speech Motion] Timeline ready, waiting for audio playback to start")
 
             # Disable face tracking during speech (but preserve current position)
             print(f"[Speech Motion] Disabling face tracking (preserving current head position)")
@@ -1154,12 +1154,36 @@ class PiMCPClient:
             # DO NOT clear face tracking offsets - preserve them so speech composes on top of current position
             # self.camera_worker.face_tracking_offsets = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
-            # Motion will start when play() is called by audio playback start
-            # For now, we'll start it immediately and let audio sync
-            audio_start = time.time()
-            self.speech_offset_player.play(audio_start)
+            # Store duration for start endpoint
+            self.speech_motion_duration = duration
+
+            # Return success - motion is prepared but not started yet
+            return web.json_response({
+                "status": "success",
+                "message": "Speech motion prepared, ready for playback",
+                "duration": duration
+            })
+
+        except Exception as e:
+            print(f"[Speech Motion Error] {e}")
+            return web.json_response({
+                "status": "error",
+                "error": str(e)
+            }, status=500)
+
+    async def handle_speech_motion_start(self, request):
+        """Start speech motion playback synchronized with audio start time"""
+        try:
+            data = await request.json()
+            audio_start_time = data.get('audio_start_time', time.time())
+
+            print(f"[Speech Motion Start] Starting playback at timestamp {audio_start_time}")
+
+            # Start motion playback with the exact audio start time
+            self.speech_offset_player.play(audio_start_time)
 
             # Schedule stop and re-enable face tracking in background
+            duration = self.speech_motion_duration
             async def stop_after_duration():
                 await asyncio.sleep(duration)
                 self.speech_offset_player.stop()
@@ -1170,15 +1194,13 @@ class PiMCPClient:
 
             asyncio.create_task(stop_after_duration())
 
-            # Return success - motion is ready and playing
             return web.json_response({
                 "status": "success",
-                "message": "Speech motion ready and started",
-                "duration": duration
+                "message": "Speech motion playback started"
             })
 
         except Exception as e:
-            print(f"[Speech Motion Error] {e}")
+            print(f"[Speech Motion Start Error] {e}")
             return web.json_response({
                 "status": "error",
                 "error": str(e)
@@ -1192,6 +1214,7 @@ class PiMCPClient:
         app.router.add_post('/display/update', self.handle_display_update)
         app.router.add_post('/mood/trigger', self.handle_mood_trigger)
         app.router.add_post('/speech/motion', self.handle_speech_motion)
+        app.router.add_post('/speech/motion/start', self.handle_speech_motion_start)
         
         runner = web.AppRunner(app)
         await runner.setup()
