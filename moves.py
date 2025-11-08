@@ -43,6 +43,7 @@ from enum import Enum
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.spatial.transform import Rotation as R
 
 from reachy_mini import ReachyMini
 from reachy_mini.utils import create_head_pose
@@ -139,6 +140,9 @@ class BreathingMove(Move):  # type: ignore
         # Prevents collision when head is turned before body follows
         self.suppress_due_to_strain = False
 
+        # Suppress Y sway during speech to prevent interference with speech motion
+        self.suppress_y_sway_during_speech = False
+
         # Track whether body is anchored (stable) vs moving
         # Only apply sway when anchored to prevent camera motion artifacts
         self.is_anchored = True
@@ -216,20 +220,20 @@ class BreathingMove(Move):  # type: ignore
             # else:
             #     roll_tilt = -self.roll_amplitude * scale * recovery_scale * np.sin(2 * np.pi * self.breathing_frequency * breathing_time)
 
-            # DISABLED: Y sway - causing coordinate frame issues
             # Y sway - only when anchored to prevent camera motion feedback
+            # Also disabled during speech to prevent interference
             x_sway = 0.0
             y_sway = 0.0
-            # if self.is_anchored:
-            #     # Body-relative sway (side-to-side) - rotate to world coordinates
-            #     # In body frame: X=0, Y=sway (perpendicular to body orientation)
-            #     # Rotate by body anchor yaw to get world X and Y components
-            #     body_local_sway = self.sway_amplitude * scale * recovery_scale * np.sin(2 * np.pi * self.breathing_frequency * breathing_time)
-            #
-            #     # Transform body-local Y sway into world coordinates
-            #     # body_anchor_yaw is already in radians (set by MovementManager)
-            #     x_sway = -body_local_sway * np.sin(self.body_anchor_yaw)  # X component in world frame
-            #     y_sway = body_local_sway * np.cos(self.body_anchor_yaw)   # Y component in world frame
+            if self.is_anchored and not self.suppress_y_sway_during_speech:
+                # Body-relative sway (side-to-side) - rotate to world coordinates
+                # In body frame: X=0, Y=sway (perpendicular to body orientation)
+                # Rotate by body anchor yaw to get world X and Y components
+                body_local_sway = self.sway_amplitude * scale * recovery_scale * np.sin(2 * np.pi * self.breathing_frequency * breathing_time)
+
+                # Transform body-local Y sway into world coordinates
+                # body_anchor_yaw is already in radians (set by MovementManager)
+                x_sway = -body_local_sway * np.sin(self.body_anchor_yaw)  # X component in world frame
+                y_sway = body_local_sway * np.cos(self.body_anchor_yaw)   # Y component in world frame
             # else:
             #     x_sway = 0.0
             #     y_sway = 0.0
@@ -267,7 +271,16 @@ def combine_full_body(primary_pose: FullBodyPose, secondary_pose: FullBodyPose) 
         primary_antennas[0] + secondary_antennas[0],
         primary_antennas[1] + secondary_antennas[1],
     )
-    combined_body_yaw = primary_body_yaw + secondary_body_yaw
+
+    # Handle None body_yaw (BreathingMove returns None to preserve current position)
+    if primary_body_yaw is None and secondary_body_yaw is None:
+        combined_body_yaw = 0.0
+    elif primary_body_yaw is None:
+        combined_body_yaw = secondary_body_yaw
+    elif secondary_body_yaw is None:
+        combined_body_yaw = primary_body_yaw
+    else:
+        combined_body_yaw = primary_body_yaw + secondary_body_yaw
 
     return (combined_head, combined_antennas, combined_body_yaw)
 
@@ -285,6 +298,7 @@ class MovementState:
     move_start_time: float | None = None
     last_activity_time: float = 0.0
     speech_offsets: Tuple[float, float, float, float, float, float] = (0.0,) * 6
+    speech_antennas: Tuple[float, float] = (0.0, 0.0)  # (left_rad, right_rad)
     face_tracking_offsets: Tuple[float, float, float, float, float, float] = (0.0,) * 6
     last_primary_pose: FullBodyPose | None = None
 
@@ -358,9 +372,13 @@ class MovementManager:
         self._stability_threshold_deg = 2.0
         self._last_head_yaw_deg = 0.0
         self._head_stable_since = None
+        # Antenna alert behavior during body repositioning
+        self._antenna_alert_start_time: float | None = None
+        self._antenna_alert_resume_delay = 0.5  # Resume breathing after 0.5s, not full completion
         self._command_queue: "Queue[Tuple[str, Any]]" = Queue()
         self._speech_offsets_lock = threading.Lock()
         self._pending_speech_offsets: Tuple[float, float, float, float, float, float] = (0.0,) * 6
+        self._pending_speech_antennas: Tuple[float, float] = (0.0, 0.0)
         self._speech_offsets_dirty = False
         self._face_offsets_lock = threading.Lock()
         self._pending_face_offsets: Tuple[float, float, float, float, float, float] = (0.0,) * 6
@@ -378,9 +396,10 @@ class MovementManager:
     def clear_move_queue(self) -> None:
         self._command_queue.put(("clear_queue", None))
 
-    def set_speech_offsets(self, offsets: Tuple[float, float, float, float, float, float]) -> None:
+    def set_speech_offsets(self, offsets: Tuple[float, float, float, float, float, float], antennas: Tuple[float, float] = (0.0, 0.0)) -> None:
         with self._speech_offsets_lock:
             self._pending_speech_offsets = offsets
+            self._pending_speech_antennas = antennas
             self._speech_offsets_dirty = True
 
     def get_current_breathing_roll(self) -> float:
@@ -476,7 +495,15 @@ class MovementManager:
         if self._speech_offsets_dirty:
             with self._speech_offsets_lock:
                 self.state.speech_offsets = self._pending_speech_offsets
+                self.state.speech_antennas = self._pending_speech_antennas
                 self._speech_offsets_dirty = False
+
+                # Suppress Y sway during speech (when any speech offset is non-zero)
+                speech_active = any(abs(val) > 0.001 for val in self._pending_speech_offsets) or \
+                                any(abs(val) > 0.001 for val in self._pending_speech_antennas)
+
+                if isinstance(self.state.current_move, BreathingMove):
+                    self.state.current_move.suppress_y_sway_during_speech = speech_active
         if self._face_offsets_dirty:
             with self._face_offsets_lock:
                 self.state.face_tracking_offsets = self._pending_face_offsets
@@ -561,7 +588,12 @@ class MovementManager:
         return np.arctan2(head_pose[1, 0], head_pose[0, 0])
 
     def _apply_body_follow(self, pose: FullBodyPose) -> FullBodyPose:
-        head_pose, antennas, body_yaw = pose
+        head_pose, antennas, original_body_yaw = pose
+
+        # CRITICAL: If current move is PoutPoseMove, pass through its body_yaw unchanged
+        # Pout mode requires explicit body control without body-follow interference
+        if isinstance(self.state.current_move, PoutPoseMove):
+            return (head_pose, antennas, original_body_yaw)
 
         # Use world-frame target from camera_worker for strain calculation if available
         # This solves the "shrinking target" problem where body-relative offsets
@@ -582,9 +614,14 @@ class MovementManager:
         strain = (head_yaw_deg - self._body_anchor_yaw + 180) % 360 - 180
         self._current_strain_deg = strain
 
+        # Track previous state to detect transitions
+        prev_state = self._anchor_state
+
         if self._anchor_state == AnchorState.ANCHORED:
             if abs(strain) > self._strain_threshold_deg:
+                # Entering SYNCING - trigger antenna alert
                 self._anchor_state = AnchorState.SYNCING
+                self._antenna_alert_start_time = now  # Start alert timer
                 self._current_body_yaw_deg = self._body_anchor_yaw
             body_yaw = np.deg2rad(self._body_anchor_yaw)
         elif self._anchor_state == AnchorState.SYNCING:
@@ -593,19 +630,48 @@ class MovementManager:
             if abs(head_yaw_deg - self._current_body_yaw_deg) < 3.0:
                 self._anchor_state = AnchorState.STABILIZING
                 self._head_stable_since = None
+                # Keep alert timer running through STABILIZING
             body_yaw = np.deg2rad(self._current_body_yaw_deg)
         elif self._anchor_state == AnchorState.STABILIZING:
             self._current_body_yaw_deg = head_yaw_deg
             if abs(head_yaw_deg - self._last_head_yaw_deg) > self._stability_threshold_deg:
+                # Head moved again - if significant, might re-enter SYNCING
+                # Check if we need to restart alert
+                if prev_state == AnchorState.STABILIZING:
+                    # Still in STABILIZING but head moved, reset timer for potential re-sync
+                    pass
                 self._head_stable_since = None
             elif self._head_stable_since is None:
                 self._head_stable_since = now
             elif now - self._head_stable_since >= self._stability_duration_s:
                 self._body_anchor_yaw = head_yaw_deg
                 self._anchor_state = AnchorState.ANCHORED
+                self._antenna_alert_start_time = None  # Clear alert timer
             body_yaw = np.deg2rad(self._current_body_yaw_deg)
 
+        # Detect transition back to SYNCING from STABILIZING (head moved significantly)
+        if prev_state == AnchorState.STABILIZING and self._anchor_state == AnchorState.SYNCING:
+            # Re-entering SYNCING - restart antenna alert
+            self._antenna_alert_start_time = now
+
+        # Antenna alert: Snap to 0° initially, resume breathing after 0.5s
+        # If we re-enter SYNCING (head moves again), snap back to 0
+        antenna_alert_active = False
+        if self._antenna_alert_start_time is not None:
+            elapsed = now - self._antenna_alert_start_time
+            if elapsed < self._antenna_alert_resume_delay:
+                # Still in alert phase - antennas at 0
+                antenna_alert_active = True
+
+        if antenna_alert_active:
+            antennas = (0.0, 0.0)
+
         self._last_head_yaw_deg = head_yaw_deg
+
+        # NOTE: No rotation compensation needed for normal face tracking
+        # Face tracking offsets are already in world frame and compose_world_offset handles them correctly
+        # PoutPoseMove handles its own body-relative head rotation internally (lines 909-918, 944-956)
+
         return (head_pose, antennas, body_yaw)
 
     def _compose_full_body_pose(self, current_time: float) -> FullBodyPose:
@@ -615,9 +681,21 @@ class MovementManager:
         return self._apply_body_follow(composed)
 
     def _get_secondary_pose(self) -> FullBodyPose:
-        offsets = [s + f for s, f in zip(self.state.speech_offsets, self.state.face_tracking_offsets)]
-        head_pose = create_head_pose(*offsets, degrees=False, mm=False)
-        return (head_pose, (0.0, 0.0), 0.0)
+        # Face tracking offsets: already in world frame from IK (uses current head pose as base)
+        # Speech offsets: apply as relative motion on top of face tracking position
+
+        # Create face tracking pose first (base position)
+        face_pose = create_head_pose(*self.state.face_tracking_offsets, degrees=False, mm=False)
+
+        # Create speech offset pose (relative motion)
+        speech_pose = create_head_pose(*self.state.speech_offsets, degrees=False, mm=False)
+
+        # Compose: apply speech motion relative to face tracking position
+        # This makes speech nods happen from wherever face tracking has positioned the head
+        head_pose = compose_world_offset(face_pose, speech_pose, reorthonormalize=True)
+
+        # Return speech antennas (face tracking doesn't control antennas)
+        return (head_pose, self.state.speech_antennas, 0.0)
 
     def _update_primary_motion(self, current_time: float) -> None:
         self._manage_move_queue(current_time)
@@ -734,3 +812,627 @@ class MovementManager:
                 time.sleep(sleep_time)
 
         logger.debug("Movement control loop stopped")
+
+
+# ============================================================================
+# Pout Mode Movement Classes
+# ============================================================================
+
+class PoutPoseMove(Move):  # type: ignore
+    """Maintains sleep/pout pose with optional discrete body rotations.
+
+    Head stays in SLEEP_HEAD_POSE (hunched/hiding posture).
+    Breathing is frozen (no sway, no roll).
+    Body can rotate to discrete angles: 0°, ±45°, ±90°.
+    """
+
+    # SLEEP_HEAD_POSE from reachy_mini SDK (reachy_mini.py:43-50)
+    SLEEP_HEAD_POSE = np.array([
+        [0.911, 0.004, 0.413, -0.021],
+        [-0.004, 1.0, -0.001, 0.001],
+        [-0.413, -0.001, 0.911, -0.044],
+        [0.0, 0.0, 0.0, 1.0],
+    ], dtype=np.float32)
+
+    SLEEP_ANTENNAS = np.array([-3.05, 3.05], dtype=np.float64)
+
+    # Discrete rotation angles (degrees)
+    ALLOWED_ROTATIONS = [-90, -45, -30, 0, 30, 45, 90]
+
+    def __init__(
+        self,
+        interpolation_start_pose: NDArray[np.float32],
+        interpolation_start_antennas: Tuple[float, float],
+        interpolation_start_body_yaw: float,
+        interpolation_duration: float = 2.0,
+        target_body_yaw_deg: float = 0.0,
+        antenna_twitch_pattern: str | None = None,
+    ):
+        """Initialize pout pose move.
+
+        Args:
+            interpolation_start_pose: Current head pose to interpolate from
+            interpolation_start_antennas: Current antenna positions
+            interpolation_start_body_yaw: Current body yaw (radians)
+            interpolation_duration: Duration to reach pout pose (seconds)
+            target_body_yaw_deg: Target body rotation in degrees (0, ±45, ±90)
+        """
+        self.interpolation_start_pose = interpolation_start_pose
+        self.interpolation_start_antennas = np.array(interpolation_start_antennas)
+        self.interpolation_start_body_yaw = interpolation_start_body_yaw
+        self.interpolation_duration = interpolation_duration
+
+        # Validate and set target rotation
+        if target_body_yaw_deg not in self.ALLOWED_ROTATIONS:
+            logger.warning(f"Invalid rotation {target_body_yaw_deg}°, using closest allowed value")
+            target_body_yaw_deg = min(self.ALLOWED_ROTATIONS, key=lambda x: abs(x - target_body_yaw_deg))
+
+        self.target_body_yaw_rad = np.deg2rad(target_body_yaw_deg)
+        self._reached_pout = False
+
+        # Antenna twitch support
+        self.antenna_twitch_pattern = antenna_twitch_pattern
+        if antenna_twitch_pattern is not None:
+            self._twitch_enabled = True
+            self._last_flick_time = 0.0
+            self._next_flick_interval = self._random_flick_interval()
+            self._in_flick = False
+            self._flick_duration = 0.1  # 100ms per flick
+            self._flick_start_time = 0.0
+
+            # Pattern-specific targets
+            if antenna_twitch_pattern == "frustration_twitch":
+                self._flick_target_left = -2.5
+                self._flick_target_right = 2.5
+            elif antenna_twitch_pattern == "angry_swing":
+                self._flick_target_left = -2.0
+                self._flick_target_right = 2.0
+            elif antenna_twitch_pattern == "nervous_flutter":
+                self._flick_target_left = -2.8
+                self._flick_target_right = 2.8
+            else:
+                self._flick_target_left = -2.5
+                self._flick_target_right = 2.5
+        else:
+            self._twitch_enabled = False
+
+    def _random_flick_interval(self) -> float:
+        """Generate random interval between flicks (1.0-1.5s)."""
+        import random
+        return random.uniform(1.0, 1.5)
+
+    @property
+    def duration(self) -> float:
+        """Duration property required by official Move interface."""
+        return float("inf")  # Continuous pout (until explicitly changed)
+
+    def evaluate(self, t: float) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None, float | None]:
+        """Evaluate pout move at time t."""
+        if t < self.interpolation_duration:
+            # Phase 1: Interpolate to pout pose
+            interp_t = t / self.interpolation_duration
+
+            # Interpolate head to SLEEP_HEAD_POSE (without rotation)
+            base_head_pose = linear_pose_interpolation(
+                self.interpolation_start_pose,
+                self.SLEEP_HEAD_POSE,
+                interp_t,
+            )
+
+            # Interpolate antennas to SLEEP_ANTENNAS
+            antennas = (
+                (1 - interp_t) * self.interpolation_start_antennas +
+                interp_t * self.SLEEP_ANTENNAS
+            ).astype(np.float64)
+
+            # Interpolate body yaw
+            body_yaw = (
+                (1 - interp_t) * self.interpolation_start_body_yaw +
+                interp_t * self.target_body_yaw_rad
+            )
+
+            # Rotate head pose by body_yaw so head rotates WITH body
+            cos_yaw = np.cos(body_yaw)
+            sin_yaw = np.sin(body_yaw)
+            yaw_rotation = np.array([
+                [cos_yaw, -sin_yaw, 0, 0],
+                [sin_yaw,  cos_yaw, 0, 0],
+                [0,        0,       1, 0],
+                [0,        0,       0, 1]
+            ], dtype=np.float32)
+            head_pose = yaw_rotation @ base_head_pose
+
+        else:
+            # Phase 2: Hold pout pose (frozen breathing)
+            if not self._reached_pout:
+                self._reached_pout = True
+                logger.info("Pout pose reached - frozen breathing")
+
+            antennas = self.SLEEP_ANTENNAS.copy()
+            body_yaw = self.target_body_yaw_rad
+
+            # Handle smooth rotation if active
+            if hasattr(self, '_smooth_rotation_active') and self._smooth_rotation_active:
+                import time
+                elapsed = time.monotonic() - self._smooth_start_time
+                if elapsed < self._smooth_duration:
+                    # Still interpolating
+                    progress = elapsed / self._smooth_duration
+                    body_yaw = self._smooth_start_yaw + (self._smooth_target_yaw - self._smooth_start_yaw) * progress
+                else:
+                    # Finished interpolating
+                    body_yaw = self._smooth_target_yaw
+                    self.target_body_yaw_rad = self._smooth_target_yaw  # Update actual target
+                    self._smooth_rotation_active = False
+                    logger.info(f"Smooth rotation complete at {np.rad2deg(body_yaw):.1f}°")
+
+            # CRITICAL: Rotate head pose by body_yaw so head rotates WITH body
+            # Create rotation matrix around Z-axis (yaw)
+            cos_yaw = np.cos(body_yaw)
+            sin_yaw = np.sin(body_yaw)
+            yaw_rotation = np.array([
+                [cos_yaw, -sin_yaw, 0, 0],
+                [sin_yaw,  cos_yaw, 0, 0],
+                [0,        0,       1, 0],
+                [0,        0,       0, 1]
+            ], dtype=np.float32)
+
+            # Apply rotation: rotated_pose = yaw_rotation @ base_pose
+            head_pose = yaw_rotation @ self.SLEEP_HEAD_POSE
+
+        # Apply antenna twitch if enabled
+        if self._twitch_enabled:
+            antennas = self._apply_antenna_twitch(t, antennas)
+
+        return (head_pose, antennas, body_yaw)
+
+    def _apply_antenna_twitch(self, t: float, base_antennas: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Apply antenna twitch pattern on top of base position."""
+        # Check if it's time for a new flick
+        if not self._in_flick and (t - self._last_flick_time) >= self._next_flick_interval:
+            self._in_flick = True
+            self._flick_start_time = t
+            self._last_flick_time = t
+            self._next_flick_interval = self._random_flick_interval()
+
+        # Execute flick if active
+        if self._in_flick:
+            flick_elapsed = t - self._flick_start_time
+            if flick_elapsed < self._flick_duration:
+                # Quick flick motion (sine wave for smooth motion)
+                flick_progress = flick_elapsed / self._flick_duration
+                blend = np.sin(np.pi * flick_progress)  # 0 -> 1 -> 0
+
+                # Interpolate from base position to flick target
+                left_antenna = base_antennas[0] + (self._flick_target_left - base_antennas[0]) * blend
+                right_antenna = base_antennas[1] + (self._flick_target_right - base_antennas[1]) * blend
+
+                return np.array([left_antenna, right_antenna], dtype=np.float64)
+            else:
+                # Flick complete
+                self._in_flick = False
+
+        return base_antennas
+
+    def rotate_to(self, angle_deg: float) -> None:
+        """Update target body rotation angle instantly.
+
+        Args:
+            angle_deg: Target rotation in degrees (0, ±45, ±90)
+        """
+        if angle_deg not in self.ALLOWED_ROTATIONS:
+            logger.warning(f"Invalid rotation {angle_deg}°, ignoring")
+            return
+
+        self.target_body_yaw_rad = np.deg2rad(angle_deg)
+        logger.info(f"Pout body rotation target updated to {angle_deg}°")
+
+    def rotate_to_smooth(self, angle_deg: float, duration: float = 3.0) -> None:
+        """Smoothly rotate to target angle over specified duration.
+
+        Args:
+            angle_deg: Target rotation in degrees (0, ±45, ±90)
+            duration: Time to complete rotation in seconds (default: 3.0)
+        """
+        if angle_deg not in self.ALLOWED_ROTATIONS:
+            logger.warning(f"Invalid rotation {angle_deg}°, ignoring")
+            return
+
+        import time
+        # Store rotation transition state
+        if not hasattr(self, '_smooth_rotation_active'):
+            self._smooth_rotation_active = False
+            self._smooth_start_time = None
+            self._smooth_start_yaw = self.target_body_yaw_rad
+            self._smooth_target_yaw = self.target_body_yaw_rad
+            self._smooth_duration = duration
+
+        # Start new smooth rotation
+        self._smooth_rotation_active = True
+        self._smooth_start_time = time.monotonic()
+        self._smooth_start_yaw = self.target_body_yaw_rad
+        self._smooth_target_yaw = np.deg2rad(angle_deg)
+        self._smooth_duration = duration
+
+        logger.info(f"Starting smooth rotation from {np.rad2deg(self._smooth_start_yaw):.1f}° to {angle_deg}° over {duration}s")
+
+
+class AntennaTwitchMove(Move):  # type: ignore
+    """Antenna twitch patterns for emotional expression.
+
+    Provides predefined twitch patterns like frustration_twitch (rapid flicks).
+    Can layer on top of other moves (antennas only, no head movement).
+    """
+
+    def __init__(
+        self,
+        pattern: str = "frustration_twitch",
+        base_antennas: Tuple[float, float] = (0.0, 0.0),
+    ):
+        """Initialize antenna twitch move.
+
+        Args:
+            pattern: Pattern name ("frustration_twitch", "angry_swing", "nervous_flutter")
+            base_antennas: Base antenna position to return to between twitches
+        """
+        self.pattern = pattern
+        self.base_antennas = np.array(base_antennas)
+        self._last_flick_time = 0.0
+        self._next_flick_interval = self._random_flick_interval()
+        self._in_flick = False
+        self._flick_duration = 0.1  # 100ms per flick
+        self._flick_start_time = 0.0
+
+        # Pattern-specific parameters
+        # Note: Antenna range is -3 to 0 (left) and 0 to +3 (right)
+        # where -3/+3 = fully down, 0 = straight up
+        if pattern == "frustration_twitch":
+            # Flick from down (-3.05/+3.05) to partially raised (-2.5/+2.5)
+            self._flick_target_left = -2.5
+            self._flick_target_right = 2.5
+        elif pattern == "angry_swing":
+            # Larger swing, more raised (-2.0/+2.0)
+            self._flick_target_left = -2.0
+            self._flick_target_right = 2.0
+        elif pattern == "nervous_flutter":
+            # Small flutter, barely raised (-2.8/+2.8)
+            self._flick_target_left = -2.8
+            self._flick_target_right = 2.8
+        else:
+            logger.warning(f"Unknown pattern '{pattern}', using frustration_twitch")
+            self._flick_target_left = -2.5
+            self._flick_target_right = 2.5
+
+    def _random_flick_interval(self) -> float:
+        """Generate random interval between flicks (1.0-1.5s)."""
+        import random
+        return random.uniform(1.0, 1.5)
+
+    @property
+    def duration(self) -> float:
+        """Duration property required by official Move interface."""
+        return float("inf")  # Continuous twitch pattern
+
+    def evaluate(self, t: float) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None, float | None]:
+        """Evaluate antenna twitch at time t."""
+        # Check if it's time for a new flick
+        if not self._in_flick and (t - self._last_flick_time) >= self._next_flick_interval:
+            self._in_flick = True
+            self._flick_start_time = t
+            self._last_flick_time = t
+            self._next_flick_interval = self._random_flick_interval()
+
+        # Execute flick if active
+        if self._in_flick:
+            flick_elapsed = t - self._flick_start_time
+            if flick_elapsed < self._flick_duration:
+                # Quick flick motion (sine wave for smooth motion)
+                # Goes from base -> target -> base over flick_duration
+                flick_progress = flick_elapsed / self._flick_duration
+                blend = np.sin(np.pi * flick_progress)  # 0 -> 1 -> 0
+
+                # Interpolate from base position to flick target
+                left_antenna = self.base_antennas[0] + (self._flick_target_left - self.base_antennas[0]) * blend
+                right_antenna = self.base_antennas[1] + (self._flick_target_right - self.base_antennas[1]) * blend
+
+                antennas = np.array([left_antenna, right_antenna], dtype=np.float64)
+            else:
+                # Flick complete, return to base
+                self._in_flick = False
+                antennas = self.base_antennas.copy()
+        else:
+            # Between flicks, hold base position
+            antennas = self.base_antennas.copy()
+
+        # No head movement, no body rotation (antennas only)
+        return (None, antennas, None)
+
+
+class SequenceMove(Move):  # type: ignore
+    """Base class for choreographed multi-step movement sequences.
+
+    Sequences are non-interruptible and guarantee completion.
+    Each step is defined by a target pose, duration, and optional callback.
+    """
+
+    def __init__(
+        self,
+        current_head_pose: NDArray[np.float32],
+        current_antennas: Tuple[float, float],
+        current_body_yaw: float,
+    ):
+        """Initialize sequence move.
+
+        Args:
+            current_head_pose: Starting head pose
+            current_antennas: Starting antenna positions
+            current_body_yaw: Starting body yaw (radians)
+        """
+        self.current_head_pose = current_head_pose
+        self.current_antennas = np.array(current_antennas)
+        self.current_body_yaw = current_body_yaw
+
+        # Sequence steps: list of (duration, target_pose, target_antennas, target_body_yaw)
+        self.steps: list[tuple[float, NDArray[np.float32], np.ndarray, float]] = []
+        self._total_duration = 0.0
+        self._step_start_times: list[float] = []
+        self._current_step_index = 0
+        self._sequence_complete = False
+
+    def add_step(
+        self,
+        duration: float,
+        target_head_pose: NDArray[np.float32] | None = None,
+        target_antennas: Tuple[float, float] | None = None,
+        target_body_yaw: float | None = None,
+    ) -> None:
+        """Add a step to the sequence.
+
+        Args:
+            duration: Duration of this step (seconds)
+            target_head_pose: Target head pose (None = hold current)
+            target_antennas: Target antenna positions (None = hold current)
+            target_body_yaw: Target body yaw radians (None = hold current)
+        """
+        # Use current values if targets not specified
+        if target_head_pose is None:
+            target_head_pose = self.current_head_pose.copy()
+        if target_antennas is None:
+            target_antennas_arr = self.current_antennas.copy()
+        else:
+            target_antennas_arr = np.array(target_antennas)
+        if target_body_yaw is None:
+            target_body_yaw = self.current_body_yaw
+
+        self.steps.append((duration, target_head_pose, target_antennas_arr, target_body_yaw))
+        self._step_start_times.append(self._total_duration)
+        self._total_duration += duration
+
+        # Update current values for next step
+        self.current_head_pose = target_head_pose
+        self.current_antennas = target_antennas_arr
+        self.current_body_yaw = target_body_yaw
+
+    @property
+    def duration(self) -> float:
+        """Total duration of the sequence."""
+        return self._total_duration
+
+    def evaluate(self, t: float) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None, float | None]:
+        """Evaluate sequence at time t."""
+        if t >= self._total_duration:
+            # Sequence complete - hold final pose
+            if not self._sequence_complete:
+                self._sequence_complete = True
+                logger.info(f"Sequence {self.__class__.__name__} complete")
+
+            final_step = self.steps[-1] if self.steps else None
+            if final_step:
+                _, head, antennas, body_yaw = final_step
+                return (head.copy(), antennas.copy(), body_yaw)
+            return (None, None, None)
+
+        # Find current step
+        step_index = 0
+        for i, start_time in enumerate(self._step_start_times):
+            if t >= start_time:
+                step_index = i
+
+        if step_index != self._current_step_index:
+            self._current_step_index = step_index
+            logger.debug(f"Sequence step {step_index + 1}/{len(self.steps)}")
+
+        # Get step parameters
+        step_duration, target_head, target_antennas, target_body_yaw = self.steps[step_index]
+        step_start_time = self._step_start_times[step_index]
+        step_local_time = t - step_start_time
+
+        # Get previous step (or initial values)
+        if step_index == 0:
+            # First step - interpolate from initial pose passed to __init__
+            # Need to access the original values before any steps were added
+            # This is a bit tricky - for now, use the first step's targets as source
+            # TODO: Store initial pose separately if needed
+            prev_head = target_head  # Simplified - could store initial separately
+            prev_antennas = target_antennas
+            prev_body_yaw = target_body_yaw
+        else:
+            _, prev_head, prev_antennas, prev_body_yaw = self.steps[step_index - 1]
+
+        # Interpolate within current step
+        interp_t = min(1.0, step_local_time / step_duration) if step_duration > 0 else 1.0
+
+        # Interpolate head pose
+        head_pose = linear_pose_interpolation(prev_head, target_head, interp_t)
+
+        # Interpolate antennas
+        antennas = ((1 - interp_t) * prev_antennas + interp_t * target_antennas).astype(np.float64)
+
+        # Interpolate body yaw
+        body_yaw = (1 - interp_t) * prev_body_yaw + interp_t * target_body_yaw
+
+        return (head_pose, antennas, body_yaw)
+
+
+# ============================================================================
+# Pout Exit Sequences
+# ============================================================================
+
+def create_pout_exit_lunge_sequence(
+    current_head_pose: NDArray[np.float32],
+    current_antennas: Tuple[float, float],
+    current_body_yaw: float,
+    user_face_yaw: float | None = None,
+) -> SequenceMove:
+    """Create 'quit being a baby' lunge sequence.
+
+    Sequence steps:
+    1. Exit pout pose → neutral (2s)
+    2. Tilt head down, point antennas at user (1s)
+    3. Lunge forward aggressively (0.5s)
+    4. Hold aggressive posture (1s)
+    5. Return to neutral (1s)
+
+    Args:
+        current_head_pose: Current head pose
+        current_antennas: Current antenna positions
+        current_body_yaw: Current body yaw (radians)
+        user_face_yaw: User's position in radians (from face detection, optional)
+
+    Returns:
+        SequenceMove configured for lunge sequence
+    """
+    seq = SequenceMove(current_head_pose, current_antennas, current_body_yaw)
+
+    # Neutral position for reference
+    neutral_pose = create_head_pose(0.0, 0.0, 0.01, 0.0, 0.0, 0.0, degrees=True, mm=False)
+
+    # Step 1: Exit pout → neutral (2s)
+    seq.add_step(
+        duration=2.0,
+        target_head_pose=neutral_pose,
+        target_antennas=(0.0, 0.0),
+        target_body_yaw=0.0,
+    )
+
+    # Step 2: Tilt head down, antennas point at user (1s)
+    # If user position known, point at them; otherwise point straight ahead
+    target_yaw = user_face_yaw if user_face_yaw is not None else 0.0
+    down_tilt_pose = create_head_pose(
+        x=0.0,
+        y=0.0,
+        z=0.01,
+        roll=0.0,
+        pitch=-15.0,  # Tilt down 15° (menacing look)
+        yaw=np.rad2deg(target_yaw),
+        degrees=True,
+        mm=False
+    )
+    seq.add_step(
+        duration=1.0,
+        target_head_pose=down_tilt_pose,
+        target_antennas=(0.0, 0.0),  # Straight up (alert/aggressive)
+        target_body_yaw=target_yaw,
+    )
+
+    # Step 3: Lunge forward (0.5s)
+    lunge_pose = create_head_pose(
+        x=0.03,  # 3cm forward lunge
+        y=0.0,
+        z=0.01,
+        roll=0.0,
+        pitch=-15.0,  # Maintain downward tilt
+        yaw=np.rad2deg(target_yaw),
+        degrees=True,
+        mm=False
+    )
+    seq.add_step(
+        duration=0.5,
+        target_head_pose=lunge_pose,
+        target_antennas=(0.0, 0.0),
+        target_body_yaw=target_yaw,
+    )
+
+    # Step 4: Hold aggressive posture (1s)
+    seq.add_step(
+        duration=1.0,
+        target_head_pose=lunge_pose,  # Hold lunge
+        target_antennas=(0.0, 0.0),
+        target_body_yaw=target_yaw,
+    )
+
+    # Step 5: Return to neutral (1s)
+    seq.add_step(
+        duration=1.0,
+        target_head_pose=neutral_pose,
+        target_antennas=(0.0, 0.0),
+        target_body_yaw=0.0,
+    )
+
+    logger.info("Created pout exit lunge sequence (5 steps, 5.5s total)")
+    return seq
+
+
+def create_pout_exit_gentle_sequence(
+    current_head_pose: NDArray[np.float32],
+    current_antennas: Tuple[float, float],
+    current_body_yaw: float,
+    user_face_yaw: float | None = None,
+) -> SequenceMove:
+    """Create 'i'm sorry laura' gentle forgiveness sequence.
+
+    Sequence steps:
+    1. Slow exit from pout → neutral (3s)
+    2. Gentle head tilt toward user (1s)
+    3. Return to neutral (1s)
+
+    Args:
+        current_head_pose: Current head pose
+        current_antennas: Current antenna positions
+        current_body_yaw: Current body yaw (radians)
+        user_face_yaw: User's position in radians (from face detection, optional)
+
+    Returns:
+        SequenceMove configured for gentle exit sequence
+    """
+    seq = SequenceMove(current_head_pose, current_antennas, current_body_yaw)
+
+    neutral_pose = create_head_pose(0.0, 0.0, 0.01, 0.0, 0.0, 0.0, degrees=True, mm=False)
+
+    # Step 1: Slow exit from pout → neutral (3s, reluctant)
+    seq.add_step(
+        duration=3.0,
+        target_head_pose=neutral_pose,
+        target_antennas=(0.0, 0.0),
+        target_body_yaw=0.0,
+    )
+
+    # Step 2: Gentle tilt toward user (1s, acknowledging apology)
+    target_yaw = user_face_yaw if user_face_yaw is not None else 0.0
+    gentle_look = create_head_pose(
+        x=0.0,
+        y=0.0,
+        z=0.01,
+        roll=0.0,
+        pitch=5.0,  # Slight upward tilt (less aggressive)
+        yaw=np.rad2deg(target_yaw),
+        degrees=True,
+        mm=False
+    )
+    seq.add_step(
+        duration=1.0,
+        target_head_pose=gentle_look,
+        target_antennas=(-np.deg2rad(5), np.deg2rad(5)),  # Slight sway (curious)
+        target_body_yaw=target_yaw,
+    )
+
+    # Step 3: Return to neutral (1s)
+    seq.add_step(
+        duration=1.0,
+        target_head_pose=neutral_pose,
+        target_antennas=(0.0, 0.0),
+        target_body_yaw=0.0,
+    )
+
+    logger.info("Created pout exit gentle sequence (3 steps, 5s total)")
+    return seq

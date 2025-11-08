@@ -218,17 +218,26 @@ class SpeechAnalyzer:
 
     def _calculate_energy_statistics(self, energy_values: np.ndarray) -> Dict[str, Any]:
         """Calculate energy statistics for emphasis detection."""
+        from scipy.signal import find_peaks
 
         mean_energy = float(np.mean(energy_values))
         std_energy = float(np.std(energy_values))
 
         # Find peaks (potential emphasis points)
-        # Peak = energy > mean + 1.5*std
-        threshold = mean_energy + 1.5 * std_energy
-        peak_indices = np.where(energy_values > threshold)[0]
+        # Peak = energy > mean + 0.3*std (very low threshold to catch all syllables)
+        threshold = mean_energy + 0.3 * std_energy
+
+        # Use find_peaks with minimum distance of 0.2s between peaks
+        frame_duration = self.hop_length / self.sample_rate
+        min_distance_frames = int(0.2 / frame_duration)  # 0.2 seconds minimum spacing
+
+        peak_indices, _ = find_peaks(
+            energy_values,
+            height=threshold,
+            distance=min_distance_frames
+        )
 
         # Convert frame indices to times
-        frame_duration = self.hop_length / self.sample_rate
         peak_times = (peak_indices * frame_duration).tolist()
 
         return {

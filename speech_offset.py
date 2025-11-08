@@ -230,8 +230,8 @@ class SpeechOffsetPlayer:
         energy_stats = audio_feat.get('energy_stats', {})
         peak_times = energy_stats.get('peak_times', [])
 
-        # Negative pitch nod: -35 degrees (tilting head up toward user, large visible motion)
-        nod_amplitude = -0.611 * mood_scale  # -35° in radians (increased from -25°)
+        # Negative pitch nod: -25 degrees (tilting head up toward user, visible emphasis)
+        nod_amplitude = -0.436 * mood_scale  # -25° in radians (balanced emphasis)
         nod_duration = 0.4  # Hold nod for 400ms (increased from 150ms for perceptibility)
         nod_x_forward = 0.010  # 10mm forward movement during nod (increased from 5mm)
 
