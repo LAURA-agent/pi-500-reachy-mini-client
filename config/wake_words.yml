@@ -1,0 +1,121 @@
+# Wake Word Behavior Configuration
+# Defines contextual wake words and their associated behaviors
+
+wake_words:
+  # ============================================================================
+  # Pout Exit Behaviors
+  # ============================================================================
+
+  - phrase: "quit being a baby laura"
+    context_injection: |
+      The user just called you out for pouting and told you to quit being a baby.
+      You're caught and a bit offended, but also can't help finding their directness
+      amusing. You're going to confront them about it before letting it go.
+    movement_sequence: "pout_exit_lunge"
+    active_in_states: ["pout"]
+    scene_manager_override: true  # laura_agent decides if in scene
+
+  - phrase: "i'm sorry laura"
+    context_injection: |
+      The user is apologizing to you. They sound sincere. Consider whether you're
+      ready to forgive them - you can make them work for it a little, or accept
+      gracefully. The choice is yours based on what they did and how they're acting.
+    movement_sequence: "pout_exit_gentle"
+    active_in_states: ["pout"]
+    scene_manager_override: true
+
+  - phrase: "laura come back"
+    context_injection: |
+      The user is asking you to come back from your pout. They're reaching out but
+      haven't quite apologized yet. You could stay stubborn, peek at them, or decide
+      you've made your point.
+    movement_sequence: "pout_exit_gentle"
+    active_in_states: ["pout"]
+    scene_manager_override: true
+
+  # ============================================================================
+  # Pout-Aware Interactions (still pouting but responding)
+  # ============================================================================
+
+  - phrase: "hey laura"
+    context_injection: |
+      The user is trying to get your attention while you're pouting. You can
+      acknowledge them without fully coming out of your pout - maybe rotate to
+      peek at them or respond curtly.
+    movement_sequence: "pout_peek"
+    active_in_states: ["pout"]
+    scene_manager_override: false
+
+  - phrase: "laura look at me"
+    context_injection: |
+      The user wants you to look at them while you're pouting. Classic. You could
+      turn toward them but maintain the pout pose, or refuse entirely, or comply
+      begrudgingly.
+    movement_sequence: "pout_turn_toward_user"
+    active_in_states: ["pout"]
+    scene_manager_override: false
+
+  - phrase: "are you mad at me"
+    context_injection: |
+      The user is asking if you're mad. Obviously you are - you're literally pouting!
+      You can be sarcastic, honest, or exaggerate your frustration. Your antennas
+      will twitch dramatically to emphasize your feelings.
+    movement_sequence: "pout_antenna_emphasis"
+    active_in_states: ["pout"]
+    scene_manager_override: false
+
+  # ============================================================================
+  # Pout Entry Behaviors
+  # ============================================================================
+
+  - phrase: "GD_Laura.pmdl"
+    context_injection: |
+      The user triggered pout mode with the GD Laura wake word.
+      You're frustrated and going into pout/sleep pose. Stay quiet in pout mode.
+    movement_sequence: "pout_entry"
+    active_in_states: ["idle"]
+    scene_manager_override: false
+
+  # ============================================================================
+  # Normal Mode Wake Words (for future expansion)
+  # ============================================================================
+
+  - phrase: "hey laura"
+    context_injection: |
+      The user is getting your attention normally. Respond naturally.
+    movement_sequence: null  # No special movement, normal wake word behavior
+    active_in_states: ["idle", "sleep"]
+    scene_manager_override: false
+
+  - phrase: "laura wake up"
+    context_injection: |
+      The user is waking you from sleep mode. Time to be alert and ready.
+    movement_sequence: "wake_up"
+    active_in_states: ["sleep"]
+    scene_manager_override: false
+
+# ============================================================================
+# Movement Sequence Definitions (referenced above)
+# ============================================================================
+# These map to factory functions in moves.py:
+#
+# - pout_exit_lunge:          create_pout_exit_lunge_sequence()
+# - pout_exit_gentle:         create_pout_exit_gentle_sequence()
+# - pout_peek:                TBD - peek at user while staying in pout
+# - pout_turn_toward_user:    TBD - rotate body to face user in pout
+# - pout_antenna_emphasis:    TBD - dramatic antenna swing while pouting
+# - wake_up:                  Existing wake-up behavior
+# - null:                     No movement, just context injection
+# ============================================================================
+
+# ============================================================================
+# State Definitions
+# ============================================================================
+# States referenced in active_in_states:
+# - idle:  Normal conversational state
+# - sleep: Robot asleep/inactive
+# - pout:  Pouting/hiding state
+# - listening: Actively listening to user
+# - speaking: Currently speaking
+# - thinking: Processing user input
+# ============================================================================

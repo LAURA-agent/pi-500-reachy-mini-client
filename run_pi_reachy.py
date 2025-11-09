@@ -741,7 +741,23 @@ class PiMCPClient:
                                 await self.audio_coordinator.play_audio_file(success_sound)
                             self.state_tracker.update_state("idle")
                             continue  # Skip everything else
-                        
+
+                        # Check if this is the pout mode wake word (GD_Laura.pmdl)
+                        if model_name == "GD_Laura.pmdl":
+                            print("[POUT] GD_Laura wake word detected - entering pout mode")
+
+                            # Play frustrated wake audio
+                            wake_audio = get_random_audio('wake', model_name)
+                            if wake_audio:
+                                print(f"[POUT] Playing frustrated wake audio: {wake_audio}")
+                                await self.audio_coordinator.play_audio_file(wake_audio)
+
+                            # Enter pout mode with slow entry (2.0s deliberate disdain)
+                            self.enter_pout_mode(initial_body_yaw_deg=0.0, entry_speed="slow")
+
+                            print("[POUT] Pout mode active - LAURA will stay in pout pose until exit wake word")
+                            continue  # Skip normal conversation flow
+
                     # Switch persona (display + voice) FIRST based on wake source
                     if wake_event_source == "keyboard_laura" or (wake_event_source.startswith("wakeword") and not self._should_route_to_claude_code(wake_event_source)):
                         # Switch to LAURA persona
@@ -1119,6 +1135,42 @@ class PiMCPClient:
                 "error": str(e)
             }, status=500)
 
+    async def handle_pout_trigger(self, request):
+        """Trigger pout mode via slash command or API"""
+        try:
+            data = await request.json()
+            entry_speed = data.get('entry_speed', 'slow')  # 'slow' or 'instant'
+            initial_body_yaw = data.get('initial_body_yaw', 0.0)
+
+            # Check if already in pout mode
+            if self._in_pout_mode:
+                print(f"[POUT API] Already in pout mode")
+                return web.json_response({
+                    "status": "ignored",
+                    "reason": "already_in_pout_mode"
+                })
+
+            print(f"[POUT API] Entering pout mode (speed: {entry_speed})")
+
+            # Enter pout mode
+            self.enter_pout_mode(
+                initial_body_yaw_deg=initial_body_yaw,
+                entry_speed=entry_speed
+            )
+
+            return web.json_response({
+                "status": "success",
+                "message": "Pout mode activated",
+                "entry_speed": entry_speed
+            })
+
+        except Exception as e:
+            print(f"[API Error] Pout trigger failed: {e}")
+            return web.json_response({
+                "status": "error",
+                "error": str(e)
+            }, status=500)
+
     async def handle_speech_motion(self, request):
         """Handle speech motion playback for pre-generated TTS audio"""
         print(f"[Speech Motion] ===== ENDPOINT CALLED =====")
@@ -1182,6 +1234,9 @@ class PiMCPClient:
             # Start motion playback with the exact audio start time
             self.speech_offset_player.play(audio_start_time)
 
+            # Update display state to speaking
+            self.state_tracker.update_state('speaking')
+
             # Schedule stop and re-enable face tracking in background
             duration = self.speech_motion_duration
             async def stop_after_duration():
@@ -1190,6 +1245,8 @@ class PiMCPClient:
                 # Reset speech offsets to neutral
                 self.movement_manager.set_speech_offsets((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
                 self.camera_worker.set_head_tracking_enabled(True)
+                # Update display state back to idle
+                self.state_tracker.update_state('idle')
                 print(f"[Speech Motion] Stopped after {duration:.2f}s, reset to neutral, face tracking re-enabled")
 
             asyncio.create_task(stop_after_duration())
@@ -1213,6 +1270,7 @@ class PiMCPClient:
         app.router.add_post('/tts/working', self.handle_tts_working)
         app.router.add_post('/display/update', self.handle_display_update)
         app.router.add_post('/mood/trigger', self.handle_mood_trigger)
+        app.router.add_post('/pout/trigger', self.handle_pout_trigger)
         app.router.add_post('/speech/motion', self.handle_speech_motion)
         app.router.add_post('/speech/motion/start', self.handle_speech_motion_start)
         
