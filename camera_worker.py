@@ -154,6 +154,14 @@ class CameraWorker:
         with self._world_frame_target_lock:
             return self._world_frame_target_yaw
 
+    def is_face_detected(self) -> bool:
+        """Check if a face is currently being tracked.
+
+        Returns:
+            True if face detected recently, False otherwise
+        """
+        return self.last_face_detected_time is not None
+
     def set_head_tracking_enabled(self, enabled: bool) -> None:
         """Enable/disable head tracking."""
         print(f"[CAMERA WORKER] set_head_tracking_enabled({enabled})")

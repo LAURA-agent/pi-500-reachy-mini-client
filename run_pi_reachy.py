@@ -326,17 +326,18 @@ class PiMCPClient:
 
         print(f"[POUT] Pout mode active - body rotation: {initial_body_yaw_deg}°")
 
-    def exit_pout_mode(self, wake_word_phrase: str | None = None):
+    def exit_pout_mode(self, wake_word_phrase: str | None = None, exit_duration: float = 3.0):
         """Exit pout mode and return to normal state.
 
         Args:
             wake_word_phrase: The wake word phrase that triggered exit (for sequence selection)
+            exit_duration: Duration for exit animation (0.5=instant, 2.0=normal, 3.0=slow)
         """
         if not self._in_pout_mode:
             print("[POUT] Not in pout mode")
             return
 
-        print(f"[POUT] Exiting pout mode (trigger: {wake_word_phrase or 'direct call'})...")
+        print(f"[POUT] Exiting pout mode (trigger: {wake_word_phrase or 'direct call'}, duration: {exit_duration}s)...")
 
         # Stop antenna twitch if active
         if self._pout_antenna_twitch:
@@ -373,12 +374,12 @@ class PiMCPClient:
             )
         elif sequence_name == "pout_exit_gentle":
             exit_sequence = create_pout_exit_gentle_sequence(
-                current_head_pose, current_antennas, current_body_yaw, user_face_yaw
+                current_head_pose, current_antennas, current_body_yaw, user_face_yaw, exit_duration
             )
         else:
             # Fallback to gentle exit
             exit_sequence = create_pout_exit_gentle_sequence(
-                current_head_pose, current_antennas, current_body_yaw, user_face_yaw
+                current_head_pose, current_antennas, current_body_yaw, user_face_yaw, exit_duration
             )
 
         # Clear move queue and run exit sequence
@@ -389,10 +390,16 @@ class PiMCPClient:
         self._in_pout_mode = False
         self._pout_move = None
 
-        # Return to idle state (will re-enable face tracking via callback)
+        # Return to idle state
         self.state_tracker.update_state("idle")
 
-        print("[POUT] Pout exit sequence started")
+        # Resume breathing explicitly
+        self.movement_manager.resume_breathing()
+
+        # Re-enable face tracking explicitly
+        self.camera_worker.set_head_tracking_enabled(True)
+
+        print("[POUT] Pout exit sequence started, breathing resumed")
 
     def pout_rotate_to(self, angle_deg: float):
         """Rotate body while in pout mode.
@@ -710,8 +717,8 @@ class PiMCPClient:
                     print("[MOOD STATE] Mood complete, returned to idle state")
                     continue
 
-                # Only check for wake events during sleep/idle/code
-                if current_state in ['sleep', 'idle', 'code']:
+                # Only check for wake events during sleep/idle/code/pout
+                if current_state in ['sleep', 'idle', 'code', 'pout']:
                     # Check for wake events
                     wake_event_source = await self.input_manager.check_for_wake_events()
                     
@@ -746,14 +753,17 @@ class PiMCPClient:
                         if model_name == "GD_Laura.pmdl":
                             print("[POUT] GD_Laura wake word detected - entering pout mode")
 
-                            # Play frustrated wake audio
+                            # Enter pout mode with slow entry (2.0s deliberate disdain)
+                            self.enter_pout_mode(initial_body_yaw_deg=0.0, entry_speed="slow")
+
+                            # Wait for pout animation to complete (2.0s entry duration)
+                            await asyncio.sleep(2.1)
+
+                            # Play frustrated wake audio AFTER reaching pout pose
                             wake_audio = get_random_audio('wake', model_name)
                             if wake_audio:
                                 print(f"[POUT] Playing frustrated wake audio: {wake_audio}")
                                 await self.audio_coordinator.play_audio_file(wake_audio)
-
-                            # Enter pout mode with slow entry (2.0s deliberate disdain)
-                            self.enter_pout_mode(initial_body_yaw_deg=0.0, entry_speed="slow")
 
                             print("[POUT] Pout mode active - LAURA will stay in pout pose until exit wake word")
                             continue  # Skip normal conversation flow
@@ -1141,6 +1151,7 @@ class PiMCPClient:
             data = await request.json()
             entry_speed = data.get('entry_speed', 'slow')  # 'slow' or 'instant'
             initial_body_yaw = data.get('initial_body_yaw', 0.0)
+            audio_clip = data.get('audio_clip', None)  # Optional pre-recorded audio
 
             # Check if already in pout mode
             if self._in_pout_mode:
@@ -1150,7 +1161,31 @@ class PiMCPClient:
                     "reason": "already_in_pout_mode"
                 })
 
-            print(f"[POUT API] Entering pout mode (speed: {entry_speed})")
+            print(f"[POUT API] Entering pout mode (speed: {entry_speed}, audio: {audio_clip or 'none'})")
+
+            # Play pre-recorded audio if specified
+            if audio_clip:
+                audio_path = f"/home/user/reachy/pout_audio/{audio_clip}.wav"
+                analysis_path = f"/home/user/reachy/pout_audio/{audio_clip}.wav.analysis.json"
+
+                if os.path.exists(audio_path) and os.path.exists(analysis_path):
+                    print(f"[POUT AUDIO] Playing: {audio_clip}")
+                    try:
+                        # Load pre-analyzed timeline
+                        import json
+                        with open(analysis_path, 'r') as f:
+                            analysis = json.load(f)
+
+                        self.speech_offset_player.load_timeline(analysis)
+
+                        # Play audio (non-blocking)
+                        await self.audio_coordinator.play_audio_file(audio_path)
+
+                        print(f"[POUT AUDIO] Playback started")
+                    except Exception as e:
+                        print(f"[POUT AUDIO ERROR] Failed to play audio: {e}")
+                else:
+                    print(f"[POUT AUDIO] Audio clip not found or missing analysis: {audio_clip}")
 
             # Enter pout mode
             self.enter_pout_mode(
@@ -1161,11 +1196,91 @@ class PiMCPClient:
             return web.json_response({
                 "status": "success",
                 "message": "Pout mode activated",
-                "entry_speed": entry_speed
+                "entry_speed": entry_speed,
+                "audio_clip": audio_clip
             })
 
         except Exception as e:
             print(f"[API Error] Pout trigger failed: {e}")
+            return web.json_response({
+                "status": "error",
+                "error": str(e)
+            }, status=500)
+
+    async def handle_pout_exit(self, request):
+        """Exit pout mode via slash command or API"""
+        try:
+            data = await request.json()
+            exit_speed = data.get('exit_speed', 'slow')  # 'instant', 'normal', or 'slow'
+
+            # Map speed to duration
+            speed_to_duration = {
+                'instant': 0.5,
+                'normal': 2.0,
+                'slow': 3.0
+            }
+            exit_duration = speed_to_duration.get(exit_speed, 3.0)
+
+            # Check if actually in pout mode
+            if not self._in_pout_mode:
+                print(f"[POUT API] Not in pout mode, nothing to exit")
+                return web.json_response({
+                    "status": "ignored",
+                    "reason": "not_in_pout_mode"
+                })
+
+            print(f"[POUT API] Exiting pout mode (speed: {exit_speed}, duration: {exit_duration}s)")
+
+            # Exit pout mode with no wake word (uses default gentle exit)
+            self.exit_pout_mode(wake_word_phrase=None, exit_duration=exit_duration)
+
+            return web.json_response({
+                "status": "success",
+                "message": f"Exiting pout mode with {exit_speed} sequence ({exit_duration}s)",
+                "exit_speed": exit_speed,
+                "exit_duration": exit_duration
+            })
+
+        except Exception as e:
+            print(f"[API Error] Pout exit failed: {e}")
+            return web.json_response({
+                "status": "error",
+                "error": str(e)
+            }, status=500)
+
+    async def handle_pout_rotate(self, request):
+        """Rotate body while in pout mode"""
+        try:
+            data = await request.json()
+            angle_deg = data.get('angle_deg', 0.0)
+
+            # Validate angle (PoutPoseMove supports 0, ±45, ±90)
+            valid_angles = [0, 45, -45, 90, -90]
+            if angle_deg not in valid_angles:
+                return web.json_response({
+                    "status": "error",
+                    "error": f"Invalid angle. Must be one of: {valid_angles}"
+                }, status=400)
+
+            # Check if in pout mode
+            if not self._in_pout_mode:
+                print(f"[POUT API] Not in pout mode, cannot rotate")
+                return web.json_response({
+                    "status": "ignored",
+                    "reason": "not_in_pout_mode"
+                })
+
+            print(f"[POUT API] Rotating to {angle_deg}°")
+            self.pout_rotate_to(angle_deg)
+
+            return web.json_response({
+                "status": "success",
+                "message": f"Rotating to {angle_deg}°",
+                "angle_deg": angle_deg
+            })
+
+        except Exception as e:
+            print(f"[API Error] Pout rotate failed: {e}")
             return web.json_response({
                 "status": "error",
                 "error": str(e)
@@ -1271,6 +1386,8 @@ class PiMCPClient:
         app.router.add_post('/display/update', self.handle_display_update)
         app.router.add_post('/mood/trigger', self.handle_mood_trigger)
         app.router.add_post('/pout/trigger', self.handle_pout_trigger)
+        app.router.add_post('/pout/exit', self.handle_pout_exit)
+        app.router.add_post('/pout/rotate', self.handle_pout_rotate)
         app.router.add_post('/speech/motion', self.handle_speech_motion)
         app.router.add_post('/speech/motion/start', self.handle_speech_motion_start)
         
@@ -1822,18 +1939,19 @@ class PiMCPClient:
         """
         if not wake_event_source or 'wakeword' not in wake_event_source:
             return False
-            
+
         # Extract model name from wake event source
         if '(' in wake_event_source and ')' in wake_event_source:
-            model_name = wake_event_source.split('(').rstrip(')')
+            # Format is "wakeword (Laura.pmdl)" - extract the part in parentheses
+            model_name = wake_event_source.split('(')[1].rstrip(')')
 
             # Define wake words that should route to Claude Code
             claude_code_wake_words = [
                 "claudecode.pmdl",
             ]
-            
+
             return model_name in claude_code_wake_words
-            
+
         return False
     
     def _should_send_enter_key(self, wake_event_source: str) -> bool:
@@ -1848,16 +1966,17 @@ class PiMCPClient:
         """
         if not wake_event_source or 'wakeword' not in wake_event_source:
             return False
-            
+
         # Extract model name from wake event source
         if '(' in wake_event_source and ')' in wake_event_source:
-            model_name = wake_event_source.split('(').rstrip(')')
-            
+            # Format is "wakeword (send_now.pmdl)" - extract the part in parentheses
+            model_name = wake_event_source.split('(')[1].rstrip(')')
+
             # Define wake words that should send Enter
             send_enter_wake_words = [
                 "send_now.pmdl",
             ]
-            
+
             return model_name in send_enter_wake_words
             
         return False
@@ -1874,16 +1993,17 @@ class PiMCPClient:
         """
         if not wake_event_source or 'wakeword' not in wake_event_source:
             return False
-            
+
         # Extract model name from wake event source
         if '(' in wake_event_source and ')' in wake_event_source:
-            model_name = wake_event_source.split('(').rstrip(')')
-            
+            # Format is "wakeword (sendnote.pmdl)" - extract the part in parentheses
+            model_name = wake_event_source.split('(')[1].rstrip(')')
+
             # Define wake words that should trigger note transfer
             note_transfer_wake_words = [
                 "sendnote.pmdl",
             ]
-            
+
             return model_name in note_transfer_wake_words
             
         return False

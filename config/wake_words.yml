@@ -37,7 +37,7 @@ wake_words:
   # Pout-Aware Interactions (still pouting but responding)
   # ============================================================================
 
-  - phrase: "hey laura"
+  - phrase: "Laura.pmdl"
     context_injection: |
       The user is trying to get your attention while you're pouting. You can
       acknowledge them without fully coming out of your pout - maybe rotate to
@@ -80,14 +80,14 @@ wake_words:
   # Normal Mode Wake Words (for future expansion)
   # ============================================================================
 
-  - phrase: "hey laura"
+  - phrase: "Laura.pmdl"
     context_injection: |
       The user is getting your attention normally. Respond naturally.
     movement_sequence: null  # No special movement, normal wake word behavior
     active_in_states: ["idle", "sleep"]
     scene_manager_override: false
 
-  - phrase: "laura wake up"
+  - phrase: "Wake_up_Laura.pmdl"
     context_injection: |
       The user is waking you from sleep mode. Time to be alert and ready.
     movement_sequence: "wake_up"

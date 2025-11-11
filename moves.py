@@ -61,6 +61,26 @@ logger = logging.getLogger(__name__)
 # Configuration constants
 CONTROL_LOOP_FREQUENCY_HZ = 100.0  # Hz - Target frequency for the movement control loop
 
+
+def ease_in_out(t: float) -> float:
+    """Ease-in-out easing function for smooth animation-style interpolation.
+
+    Provides natural acceleration at the start and deceleration at the end,
+    creating organic, cartoon-like motion.
+
+    Args:
+        t: Progress from 0.0 to 1.0
+
+    Returns:
+        Eased progress value from 0.0 to 1.0
+
+    Math: Uses cosine curve: 0.5 - 0.5 * cos(t * π)
+    - At t=0: returns 0 (starts slow)
+    - At t=0.5: returns 0.5 (middle speed)
+    - At t=1: returns 1 (ends slow)
+    """
+    return 0.5 - 0.5 * np.cos(t * np.pi)
+
 # Type definitions
 FullBodyPose = Tuple[NDArray[np.float32], Tuple[float, float], float]  # (head_pose_4x4, antennas, body_yaw)
 
@@ -380,6 +400,7 @@ class MovementManager:
         self._pending_speech_offsets: Tuple[float, float, float, float, float, float] = (0.0,) * 6
         self._pending_speech_antennas: Tuple[float, float] = (0.0, 0.0)
         self._speech_offsets_dirty = False
+        self._speech_session_active = False  # Persistent flag for entire speech duration
         self._face_offsets_lock = threading.Lock()
         self._pending_face_offsets: Tuple[float, float, float, float, float, float] = (0.0,) * 6
         self._face_offsets_dirty = False
@@ -401,6 +422,11 @@ class MovementManager:
             self._pending_speech_offsets = offsets
             self._pending_speech_antennas = antennas
             self._speech_offsets_dirty = True
+
+            # Track speech session: True when any non-zero values, False when all zeros
+            # This provides persistent suppression for entire speech duration
+            has_nonzero = any(abs(val) > 0.001 for val in offsets) or any(abs(val) > 0.001 for val in antennas)
+            self._speech_session_active = has_nonzero
 
     def get_current_breathing_roll(self) -> float:
         with self._breathing_roll_lock:
@@ -498,12 +524,12 @@ class MovementManager:
                 self.state.speech_antennas = self._pending_speech_antennas
                 self._speech_offsets_dirty = False
 
-                # Suppress Y sway during speech (when any speech offset is non-zero)
-                speech_active = any(abs(val) > 0.001 for val in self._pending_speech_offsets) or \
-                                any(abs(val) > 0.001 for val in self._pending_speech_antennas)
-
+                # Suppress Y sway during speech session (persistent flag)
+                # Uses _speech_session_active which stays True for entire speech duration
                 if isinstance(self.state.current_move, BreathingMove):
-                    self.state.current_move.suppress_y_sway_during_speech = speech_active
+                    if self.state.current_move.suppress_y_sway_during_speech != self._speech_session_active:
+                        print(f"[Y Sway] Suppression: {self._speech_session_active}")
+                    self.state.current_move.suppress_y_sway_during_speech = self._speech_session_active
         if self._face_offsets_dirty:
             with self._face_offsets_lock:
                 self.state.face_tracking_offsets = self._pending_face_offsets
@@ -511,9 +537,13 @@ class MovementManager:
 
     def _handle_command(self, command: str, payload: Any, current_time: float) -> None:
         if command == "queue_move":
+            move_name = payload.__class__.__name__
+            move_duration = getattr(payload, 'duration', 'N/A')
+            print(f"[MOVEMENT] Queuing move: {move_name}, duration: {move_duration}s")
             self.move_queue.append(payload)
             self.state.update_activity()
         elif command == "clear_queue":
+            print(f"[MOVEMENT] Clearing move queue ({len(self.move_queue)} moves)")
             self.move_queue.clear()
             self.state.current_move = None
             self._breathing_active = False
@@ -533,6 +563,10 @@ class MovementManager:
     def _manage_move_queue(self, current_time: float) -> None:
         move_ended = self.state.current_move and \
                      (current_time - self.state.move_start_time >= self.state.current_move.duration)
+        if move_ended:
+            move_name = self.state.current_move.__class__.__name__
+            duration = self.state.current_move.duration
+            print(f"[MOVEMENT] Move completed: {move_name} (duration: {duration}s)")
         if not self.state.current_move or move_ended:
             self.state.current_move = None
             self._suppress_face_tracking = False
@@ -541,6 +575,10 @@ class MovementManager:
                 self.state.move_start_time = current_time
                 self._breathing_active = isinstance(self.state.current_move, BreathingMove)
                 self._suppress_face_tracking = not self._breathing_active
+                move_name = self.state.current_move.__class__.__name__
+                duration = self.state.current_move.duration
+                print(f"[MOVEMENT] Starting move: {move_name} (duration: {duration}s)")
+
 
     def _manage_breathing(self, current_time: float) -> None:
         with self._external_control_lock:
@@ -1168,6 +1206,12 @@ class SequenceMove(Move):  # type: ignore
             current_antennas: Starting antenna positions
             current_body_yaw: Starting body yaw (radians)
         """
+        # Store initial pose for interpolation from current position
+        self.initial_head_pose = current_head_pose.copy()
+        self.initial_antennas = np.array(current_antennas)
+        self.initial_body_yaw = current_body_yaw
+
+        # Track current values as steps are added
         self.current_head_pose = current_head_pose
         self.current_antennas = np.array(current_antennas)
         self.current_body_yaw = current_body_yaw
@@ -1249,18 +1293,16 @@ class SequenceMove(Move):  # type: ignore
 
         # Get previous step (or initial values)
         if step_index == 0:
-            # First step - interpolate from initial pose passed to __init__
-            # Need to access the original values before any steps were added
-            # This is a bit tricky - for now, use the first step's targets as source
-            # TODO: Store initial pose separately if needed
-            prev_head = target_head  # Simplified - could store initial separately
-            prev_antennas = target_antennas
-            prev_body_yaw = target_body_yaw
+            # First step - interpolate from initial pose
+            prev_head = self.initial_head_pose
+            prev_antennas = self.initial_antennas
+            prev_body_yaw = self.initial_body_yaw
         else:
             _, prev_head, prev_antennas, prev_body_yaw = self.steps[step_index - 1]
 
-        # Interpolate within current step
-        interp_t = min(1.0, step_local_time / step_duration) if step_duration > 0 else 1.0
+        # Interpolate within current step with ease-in-out
+        interp_t_linear = min(1.0, step_local_time / step_duration) if step_duration > 0 else 1.0
+        interp_t = ease_in_out(interp_t_linear)
 
         # Interpolate head pose
         head_pose = linear_pose_interpolation(prev_head, target_head, interp_t)
@@ -1378,11 +1420,12 @@ def create_pout_exit_gentle_sequence(
     current_antennas: Tuple[float, float],
     current_body_yaw: float,
     user_face_yaw: float | None = None,
+    exit_duration: float = 3.0,
 ) -> SequenceMove:
     """Create 'i'm sorry laura' gentle forgiveness sequence.
 
     Sequence steps:
-    1. Slow exit from pout → neutral (3s)
+    1. Exit from pout → neutral (configurable duration)
     2. Gentle head tilt toward user (1s)
     3. Return to neutral (1s)
 
@@ -1391,6 +1434,7 @@ def create_pout_exit_gentle_sequence(
         current_antennas: Current antenna positions
         current_body_yaw: Current body yaw (radians)
         user_face_yaw: User's position in radians (from face detection, optional)
+        exit_duration: Duration for initial exit from pout (0.5=instant, 2.0=normal, 3.0=slow)
 
     Returns:
         SequenceMove configured for gentle exit sequence
@@ -1399,9 +1443,9 @@ def create_pout_exit_gentle_sequence(
 
     neutral_pose = create_head_pose(0.0, 0.0, 0.01, 0.0, 0.0, 0.0, degrees=True, mm=False)
 
-    # Step 1: Slow exit from pout → neutral (3s, reluctant)
+    # Step 1: Exit from pout → neutral (configurable speed)
     seq.add_step(
-        duration=3.0,
+        duration=exit_duration,
         target_head_pose=neutral_pose,
         target_antennas=(0.0, 0.0),
         target_body_yaw=0.0,
@@ -1434,5 +1478,7 @@ def create_pout_exit_gentle_sequence(
         target_body_yaw=0.0,
     )
 
-    logger.info("Created pout exit gentle sequence (3 steps, 5s total)")
+    total_duration = exit_duration + 2.0  # exit_duration + 1s + 1s
+    logger.info(f"Created pout exit gentle sequence (3 steps, {total_duration}s total, first step: {exit_duration}s)")
+    print(f"[POUT EXIT] Sequence created: {len(seq.steps)} steps, total duration: {seq.duration}s")
     return seq
