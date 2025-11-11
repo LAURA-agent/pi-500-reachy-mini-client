@@ -196,6 +196,10 @@ class PiMCPClient:
         self._mood_process = None  # Track active mood subprocess for cleanup
         self._mood_reject_count = 0  # Kill process if spam exceeds limit
 
+        # Wake-from-sleep tracking for camera capture
+        self._previous_state = None
+        self._wake_from_sleep = False
+
         # Pout mode tracking
         self._in_pout_mode = False
         self._pout_move = None  # Active PoutPoseMove instance
@@ -493,8 +497,13 @@ class PiMCPClient:
             traceback.print_exc()
             return False
 
-    async def send_to_server(self, transcript: str) -> dict | None:
-        """Send text to MCP server, forward response to Reachy for mood movements + TTS"""
+    async def send_to_server(self, transcript: str, wake_frame: str = None) -> dict | None:
+        """Send text to MCP server, forward response to Reachy for mood movements + TTS
+
+        Args:
+            transcript: User's speech transcript
+            wake_frame: Optional base64-encoded JPEG frame captured at wake from sleep
+        """
         if not self.session_id or not self.mcp_session:
             print("[ERROR] Session not initialized. Cannot send message.")
             return {"text": "Error: Client session not ready.", "mood": "error"}
@@ -513,6 +522,11 @@ class PiMCPClient:
                 "output_mode": ["text", "audio"],
                 "timestamp": datetime.utcnow().isoformat() + "Z"
             }
+
+            # Include wake frame if provided
+            if wake_frame:
+                tool_call_args["wake_frame"] = wake_frame
+                print(f"[WAKE] Including wake frame in MCP payload ({len(wake_frame)} chars)")
 
             print(f"[INFO] Calling 'run_LAURA' tool...")
             response_payload = await self.mcp_session.call_tool("run_LAURA", arguments=tool_call_args)
@@ -565,6 +579,17 @@ class PiMCPClient:
         while True:
             try:
                 current_state = self.state_tracker.get_state()
+
+                # Detect wake from sleep (previous state was 'sleep', current is not)
+                if self._previous_state == 'sleep' and current_state != 'sleep':
+                    print(f"[WAKE] Detected wake from sleep -> {current_state}")
+                    self._wake_from_sleep = True
+                elif self._previous_state != current_state:
+                    # Any other state change clears the wake flag
+                    self._wake_from_sleep = False
+
+                # Update previous state for next iteration
+                self._previous_state = current_state
 
                 # Handle Claude Code plugin mood state
                 if current_state == 'cc_plugin_mood':
@@ -905,10 +930,29 @@ class PiMCPClient:
                     
                     # Check for document uploads
                     await self.system_command_manager.check_and_upload_documents(self.mcp_session, self.session_id)
-                    
+
+                    # Capture camera frame if waking from sleep
+                    wake_frame = None
+                    if self._wake_from_sleep:
+                        print("[WAKE] Capturing camera frame at VAD stop (wake from sleep)")
+                        try:
+                            frame_bytes = self.daemon_client.get_camera_frame()
+                            if frame_bytes:
+                                # Encode as base64 for transmission in MCP payload
+                                import base64
+                                wake_frame = base64.b64encode(frame_bytes).decode('utf-8')
+                                print(f"[WAKE] Camera frame captured: {len(wake_frame)} chars (base64)")
+                            else:
+                                print("[WAKE] Camera frame capture failed (no data)")
+                        except Exception as e:
+                            print(f"[WAKE] Camera frame capture error: {e}")
+
+                        # Clear wake flag after capture
+                        self._wake_from_sleep = False
+
                     # Process normal conversation
                     self.state_tracker.update_state('thinking')
-                    response = await self.send_to_server(transcript)
+                    response = await self.send_to_server(transcript, wake_frame=wake_frame)
                     
                     # Only process response if not filtered out
                     if response is not None:
