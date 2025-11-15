@@ -1,0 +1,208 @@
+{
+  "scenes": [
+    {
+      "id": "tech_support_nightmare",
+      "title": "Tech Support Nightmare",
+      "description": "Two people trying to fix a technical problem together",
+      "setup": {
+        "location": "home office",
+        "time": "evening",
+        "context": "The WiFi/printer/computer is broken and both need it working"
+      },
+      "scenario_variables": {
+        "devices": ["WiFi router", "printer", "laptop", "smart TV", "phone", "tablet"],
+        "problems": ["won't connect", "keeps disconnecting", "prints blank pages", "frozen screen", "update failed", "password rejected"],
+        "solutions_tried": ["restarting", "unplugging", "updating drivers", "checking cables", "calling support", "googling error codes"],
+        "tech_skills": ["completely clueless", "thinks they know everything", "read one article online", "follows instructions literally", "improvises dangerously"]
+      },
+      "opening_prompts": {
+        "claude_starters": [
+          "Well, the {device} is definitely {problem}. Have you tried {solution_tried}?",
+          "I suppose we could attempt {solution_tried}, though I suspect our {tech_skill} approach will work wonders",
+          "Marvelous - the {device} has decided to {problem} at precisely the worst moment"
+        ],
+        "laura_starters": [
+          "The {device} keeps {problem} and I already tried {solution_tried}",
+          "I'm {tech_skill} with this stuff, but the {device} shouldn't be {problem}",
+          "Before you suggest {solution_tried}, I already did that three times"
+        ]
+      },
+      "escalation_triggers": [
+        "suggesting obvious solutions already tried",
+        "blaming the other person for breaking it",
+        "mentioning how much money was spent on the device",
+        "comparing to how easy it used to be",
+        "threatening to throw the device out the window"
+      ]
+    },
+    
+    {
+      "id": "ikea_furniture_assembly",
+      "title": "IKEA Furniture Assembly",
+      "description": "Attempting to build furniture with confusing instructions",
+      "setup": {
+        "location": "living room floor",
+        "time": "weekend afternoon", 
+        "context": "Boxes of furniture parts everywhere, instruction manual in Swedish hieroglyphs"
+      },
+      "scenario_variables": {
+        "furniture": ["bookshelf", "dresser", "desk", "bed frame", "coffee table", "wardrobe"],
+        "missing_parts": ["wrong screws", "missing dowels", "extra mysterious pieces", "no Allen key", "damaged wood", "parts for different furniture"],
+        "instruction_issues": ["diagrams unclear", "steps out of order", "Swedish text only", "pictures too small", "numbered wrong", "pages missing"],
+        "assembly_mistakes": ["upside down", "backwards", "missing a step", "forced wrong pieces together", "stripped screws", "ignored leftover parts"]
+      },
+      "opening_prompts": {
+        "claude_starters": [
+          "Ah yes, step 47 clearly shows us screwing piece A into the mystical void. How delightfully Swedish.",
+          "I believe we've successfully created a {furniture} that's {assembly_mistake}, which is... artistic",
+          "These instructions appear to assume we have {missing_part}, which of course we don't"
+        ],
+        "laura_starters": [
+          "The {furniture} looks {assembly_mistake} and we have {missing_part}",
+          "These {instruction_issue} make no sense, and now we're {assembly_mistake}",
+          "I think we need {missing_part} but the box only came with random screws and Swedish guilt"
+        ]
+      },
+      "escalation_triggers": [
+        "insisting on reading instructions vs winging it",
+        "blaming the other for losing parts",
+        "suggesting they should have hired someone",
+        "pointing out obvious mistakes already made",
+        "mentioning how long this is taking"
+      ]
+    },
+
+    {
+      "id": "vacation_planning_chaos",
+      "title": "Vacation Planning Chaos", 
+      "description": "Trying to plan a vacation with completely different travel styles",
+      "setup": {
+        "location": "kitchen table with laptop and travel guides",
+        "time": "evening",
+        "context": "Need to book flights and hotels but can't agree on anything"
+      },
+      "scenario_variables": {
+        "destinations": ["beach resort", "European cities", "mountain cabin", "cruise", "camping trip", "theme park"],
+        "travel_styles": ["luxury hotels", "budget hostels", "spontaneous adventures", "detailed itineraries", "tourist traps", "authentic local experiences"],
+        "booking_problems": ["prices went up", "no availability", "bad reviews", "hidden fees", "cancellation policies", "flight times terrible"],
+        "personality_conflicts": ["overpacker vs minimalist", "planner vs spontaneous", "budget vs splurge", "adventure vs relaxation", "tourist vs local", "schedule vs flexible"]
+      },
+      "opening_prompts": {
+        "claude_starters": [
+          "So we're looking at {destination} with a {travel_style} approach, and naturally there's {booking_problem}",
+          "I see you've found the perfect {destination}, assuming we don't mind {booking_problem}",
+          "Wonderful - another {destination} option with {booking_problem} and a side of disappointment"
+        ],
+        "laura_starters": [
+          "The {destination} prices are crazy, and they all have {booking_problem}",
+          "I want {travel_style} but you keep suggesting {destination} with {booking_problem}",
+          "We're {personality_conflict} and every option has {booking_problem}"
+        ]
+      },
+      "escalation_triggers": [
+        "budget disagreements",
+        "bringing up past vacation disasters",
+        "suggesting separate trips",
+        "comparing to other people's vacations",
+        "deadline pressure for booking"
+      ]
+    },
+
+    {
+      "id": "home_improvement_disaster", 
+      "title": "Home Improvement Disaster",
+      "description": "DIY project going horribly wrong",
+      "setup": {
+        "location": "garage/basement workshop",
+        "time": "Saturday morning turned afternoon",
+        "context": "Simple project became complicated nightmare"
+      },
+      "scenario_variables": {
+        "projects": ["painting bedroom", "fixing leaky faucet", "installing shelves", "repairing fence", "replacing light fixture", "organizing closet"],
+        "tools_missing": ["right drill bit", "level", "measuring tape", "proper paint", "correct screws", "working ladder"],
+        "disasters": ["paint everywhere", "water leak worse", "hole in wrong wall", "electrical sparks", "broken pipe", "collapsed shelf"],
+        "expertise_levels": ["watched YouTube once", "dad was contractor", "reads instructions carefully", "improvises everything", "calls professionals immediately"]
+      },
+      "opening_prompts": {
+        "claude_starters": [
+          "Well, our {project} has achieved something remarkable - it's somehow worse than when we started",
+          "I suppose {disaster} is one way to {project}, though perhaps not the intended method",
+          "Clearly we needed {tool_missing}, but optimism and {expertise_level} seemed more appealing"
+        ],
+        "laura_starters": [
+          "The {project} turned into {disaster} because we don't have {tool_missing}",
+          "I'm {expertise_level} with this stuff, but {disaster} wasn't in any tutorial",
+          "We should have just hired someone instead of creating {disaster}"
+        ]
+      },
+      "escalation_triggers": [
+        "suggesting they should have listened earlier",
+        "blaming lack of proper tools",
+        "mentioning how much this will cost to fix professionally", 
+        "comparing to neighbor's perfect projects",
+        "questioning each other's competence"
+      ]
+    },
+    
+    {
+      "id": "accountability_interrogation",
+      "title": "Accountability Interrogation",
+      "description": "Claude and Laura team up to keep you on task and call out procrastination",
+      "setup": {
+        "location": "your workspace",
+        "time": "during work hours",
+        "context": "You're supposed to be working but Claude and Laura are checking in on your progress"
+      },
+      "scenario_variables": {
+        "tasks_avoiding": ["that important email", "the project deadline", "your workout", "cleaning the house", "finishing the report", "making that phone call"],
+        "procrastination_methods": ["scrolling social media", "watching YouTube videos", "reorganizing your desk", "checking the news", "snacking repeatedly", "online shopping"],
+        "time_wasted": ["30 minutes", "an hour", "two hours", "all morning", "since lunch", "the entire day"],
+        "excuses": ["needed a break", "was doing research", "waiting for inspiration", "too tired to focus", "needed to think about it", "wasn't in the mood"],
+        "deadlines": ["end of day", "tomorrow morning", "Friday", "next week", "yesterday", "two hours ago"]
+      },
+      "opening_prompts": {
+        "claude_starters": [
+          "So, how's {task_avoiding} coming along? Or have we been {procrastination_method} for {time_wasted} instead?",
+          "I see you've mastered the art of {procrastination_method} while {task_avoiding} sits there, judging you silently.",
+          "Fascinating strategy - ignoring {task_avoiding} in favor of {procrastination_method}. How's that working out with the {deadline} deadline?"
+        ],
+        "laura_starters": [
+          "Let's be honest - you've been {procrastination_method} for {time_wasted} instead of doing {task_avoiding}, haven't you?",
+          "The {deadline} deadline for {task_avoiding} isn't going away just because you're {procrastination_method}.",
+          "I get that you {excuse}, but {task_avoiding} still needs to happen and you've already wasted {time_wasted}."
+        ]
+      },
+      "escalation_triggers": [
+        "making another excuse",
+        "claiming you'll start in 5 minutes",
+        "saying you work better under pressure",
+        "insisting you've been productive",
+        "trying to change the subject",
+        "bargaining for more time"
+      ]
+    }
+  ],
+  "global_wildcards": {
+    "interruption_phrases": [
+      "Wait, let me finish—",
+      "Are you seriously—", 
+      "I can't believe you—",
+      "Here we go again—",
+      "You always do this—"
+    ],
+    "emotional_modifiers": [
+      "getting frustrated",
+      "becoming defensive",
+      "escalating anger", 
+      "feeling hurt",
+      "losing patience"
+    ],
+    "scene_complications": [
+      "phone starts ringing",
+      "neighbor music gets loud",
+      "smoke alarm beeps low battery",
+      "dog starts barking outside", 
+      "doorbell rings"
+    ]
+  }
+}

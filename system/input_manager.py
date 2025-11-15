@@ -334,9 +334,16 @@ class InputManager:
 
     def resume_wake_word_detection(self):
         """Resume wake word detection after temporary pause"""
-        # Stream will be recreated on next wake_word_detection() call
-        # This avoids segfaults from trying to restart closed streams
-        pass
+        # Ensure stream is marked as None so wake_word_detection() recreates it
+        if self.wake_stream:
+            try:
+                if self.wake_stream.is_active():
+                    self.wake_stream.stop_stream()
+                self.wake_stream.close()
+            except:
+                pass
+        self.wake_stream = None
+        print("[Wake Word] Stream cleared, will recreate on next detection cycle")
 
     def restart_wake_word_detection(self):
         """Alias for resume_wake_word_detection for compatibility"""

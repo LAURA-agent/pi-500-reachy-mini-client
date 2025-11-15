@@ -24,19 +24,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-# Mood scaling factors
-MOOD_SCALES = {
-    None: 1.0,
-    "calm": 0.7,
-    "thoughtful": 0.8,
-    "welcoming": 1.0,
-    "celebratory": 1.5,
-    "confused": 1.2,
-    "frustrated": 1.5,
-    "surprised": 1.8,
-    "energetic": 1.8,
-    "playful": 1.6,
-}
+# Removed mood scaling - movements use constant amplitude
 
 
 class SpeechOffsetPlayer:
@@ -115,18 +103,14 @@ class SpeechOffsetPlayer:
         text_feat = analysis.get('text_features', {})
         duration = analysis.get('duration', 0.0)
 
-        # Extract mood scaling factor
-        mood = text_feat.get('mood')
-        mood_scale = MOOD_SCALES.get(mood, 1.0)
         baseline_pitch_rad = 0.0  # No baseline pitch offset during speech
-        logger.debug(f"Mood: {mood}, scale: {mood_scale}")
 
-        # 1. Generate pitch → antenna events (continuous throughout)
-        pitch_events = self._generate_pitch_events(audio_feat, mood_scale, baseline_pitch_rad)
-        events.extend(pitch_events)
+        # 1. Generate oscillator events (antenna + head pitch, continuous throughout)
+        oscillator_events = self._generate_pitch_events(audio_feat, baseline_pitch_rad)
+        events.extend(oscillator_events)
 
-        # 2. Generate energy peak → head nod events (discrete, preserving Z and antennas from pitch)
-        events.extend(self._generate_peak_events(audio_feat, mood_scale, pitch_events, baseline_pitch_rad))
+        # 2. Peak-based nods disabled - using continuous pitch oscillator instead
+        # events.extend(self._generate_peak_events(audio_feat, oscillator_events, baseline_pitch_rad))
 
         # 3. Generate pause → reset events (discrete)
         events.extend(self._generate_pause_events(audio_feat, baseline_pitch_rad))
@@ -144,83 +128,74 @@ class SpeechOffsetPlayer:
 
         return events
 
-    def _generate_pitch_events(self, audio_feat: Dict, mood_scale: float, baseline_pitch_rad: float) -> List[Dict]:
-        """Generate antenna rotation events from pitch contour.
+    def _generate_pitch_events(self, audio_feat: Dict, baseline_pitch_rad: float) -> List[Dict]:
+        """Generate antenna rotation events from audio energy (loudness-driven oscillators).
 
         Args:
             audio_feat: Audio features dict
-            mood_scale: Mood amplitude scaling factor
 
         Returns:
             List of timeline events with antenna rotations
         """
         events = []
-        pitch_contour = audio_feat.get('pitch_contour', {})
-        times = pitch_contour.get('times', [])
-        values = pitch_contour.get('values', [])
-        confidence = pitch_contour.get('confidence', [])
+        energy_envelope = audio_feat.get('energy_envelope', {})
+        times = energy_envelope.get('times', [])
+        values = energy_envelope.get('values', [])
 
-        if not times or not values or not confidence:
-            logger.warning("No pitch contour data, skipping antenna motion")
+        if not times or not values:
+            logger.warning("No energy envelope data, skipping antenna motion")
             return events
 
-        # Dynamic pitch normalization: Use actual speaker's pitch range
-        # Extract high-confidence voiced pitch values
-        voiced_pitches = [pitch for pitch, conf in zip(values, confidence) if conf >= 0.5 and pitch > 0]
+        # Oscillator parameters
+        antenna_freq_hz = 2.0  # Antenna roll oscillation frequency
+        antenna_amplitude_rad = 1.5  # 1.5 radians (~86 degrees) amplitude
 
-        if not voiced_pitches:
-            logger.warning("No high-confidence voiced regions, skipping antenna motion")
-            return events
+        pitch_freq_hz = 4.5  # Head pitch oscillation frequency (syllable rate)
+        pitch_min_deg = -3.0  # Minimum pitch (slight tilt down)
+        pitch_max_deg = 12.0  # Maximum pitch (tilt up)
+        pitch_center_deg = (pitch_min_deg + pitch_max_deg) / 2.0  # Center at 5°
+        pitch_amplitude_deg = (pitch_max_deg - pitch_min_deg) / 2.0  # ±10° range
 
-        # Calculate speaker's actual pitch range
-        pitch_min = float(np.percentile(voiced_pitches, 10))  # 10th percentile (ignore outliers)
-        pitch_max = float(np.percentile(voiced_pitches, 90))  # 90th percentile
-        pitch_range = pitch_max - pitch_min
+        # Loudness normalization (RMS energy to gain)
+        energy_min = float(np.percentile(values, 10))  # 10th percentile
+        energy_max = float(np.percentile(values, 90))  # 90th percentile
+        energy_range = energy_max - energy_min if energy_max > energy_min else 1.0
 
-        # If pitch range too narrow (monotone), disable antenna motion
-        if pitch_range < 20.0:  # Less than 20 Hz variation = monotone
-            logger.info(f"Pitch range too narrow ({pitch_range:.1f} Hz), using energy-only motion")
-            return events
+        logger.info(f"Energy range: {energy_min:.6f} - {energy_max:.6f}")
 
-        logger.info(f"Dynamic pitch range: {pitch_min:.1f} - {pitch_max:.1f} Hz ({pitch_range:.1f} Hz)")
+        # Random phase offsets for natural variation
+        antenna_phase = np.random.random() * 2 * np.pi
+        pitch_phase = np.random.random() * 2 * np.pi
 
-        # Increased amplitudes for visibility
-        # Antenna range: LEFT: 0 to -3 (negative), RIGHT: 0 to +3 (positive)
-        # High pitch = antennas back, Low pitch = antennas forward
-        antenna_back = 1.5 * mood_scale  # High pitch: antennas tilted back (increased from 0.8)
-        antenna_forward = -1.5 * mood_scale  # Low pitch: antennas tilted forward
-        head_bob_max = 0.010 * mood_scale  # 10mm vertical bob (increased from 5mm)
+        for t, energy in zip(times, values):
+            # Normalize energy to [0, 1] loudness gain
+            loudness = (energy - energy_min) / energy_range
+            loudness = np.clip(loudness, 0.0, 1.0)
 
-        for t, pitch, conf in zip(times, values, confidence):
-            # Only use high-confidence voiced regions
-            if conf < 0.5 or pitch < pitch_min:
-                antenna_angle = 0.0
-                head_z = 0.0
-            else:
-                # Normalize and map to antenna rotation using speaker's actual range
-                # High pitch (1.0) = back, Low pitch (0.0) = forward
-                normalized = (pitch - pitch_min) / pitch_range
-                normalized = np.clip(normalized, 0.0, 1.0)
-                antenna_angle = antenna_forward + normalized * (antenna_back - antenna_forward)
+            # Antenna oscillator: Sine wave modulated by loudness
+            antenna_angle = antenna_amplitude_rad * loudness * np.sin(2 * np.pi * antenna_freq_hz * t + antenna_phase)
+            left_antenna = np.clip(antenna_angle, -3.1, 0.1)
+            right_antenna = np.clip(-antenna_angle, -0.1, 3.1)
 
-                # Z bobbing: low pitch = down, high pitch = up
-                head_z = (normalized - 0.5) * 2.0 * head_bob_max  # Range: -10mm to +10mm
+            # Head pitch oscillator: Sine wave modulated by loudness, asymmetric range
+            pitch_oscillation = np.sin(2 * np.pi * pitch_freq_hz * t + pitch_phase)
+            pitch_deg = pitch_center_deg + pitch_amplitude_deg * loudness * pitch_oscillation
+            pitch_rad = np.deg2rad(pitch_deg)
 
             events.append({
                 'time': float(t),
-                'offsets': (0.0, 0.0, head_z, 0.0, 0.0, 0.0),  # Z offset only, no baseline pitch
-                'antennas': (antenna_angle, -antenna_angle)  # LEFT positive, RIGHT negative
+                'offsets': (0.0, 0.0, 0.0, 0.0, pitch_rad, 0.0),  # Pitch oscillation
+                'antennas': (left_antenna, right_antenna)
             })
 
-        logger.debug(f"Generated {len(events)} pitch-based antenna events")
+        logger.debug(f"Generated {len(events)} loudness-driven antenna oscillator events")
         return events
 
-    def _generate_peak_events(self, audio_feat: Dict, mood_scale: float, pitch_events: List[Dict], baseline_pitch_rad: float) -> List[Dict]:
+    def _generate_peak_events(self, audio_feat: Dict, pitch_events: List[Dict], baseline_pitch_rad: float) -> List[Dict]:
         """Generate head nod events from energy peaks, preserving Z and antenna values from pitch contour.
 
         Args:
             audio_feat: Audio features dict
-            mood_scale: Mood amplitude scaling factor
             pitch_events: Voice pitch events to sample Z and antenna values from
 
         Returns:
@@ -230,10 +205,10 @@ class SpeechOffsetPlayer:
         energy_stats = audio_feat.get('energy_stats', {})
         peak_times = energy_stats.get('peak_times', [])
 
-        # Negative pitch nod: -25 degrees (tilting head up toward user, visible emphasis)
-        nod_amplitude = -0.436 * mood_scale  # -25° in radians (balanced emphasis)
-        nod_duration = 0.4  # Hold nod for 400ms (increased from 150ms for perceptibility)
-        nod_x_forward = 0.010  # 10mm forward movement during nod (increased from 5mm)
+        # Negative head pitch nod: -15 degrees (tilting head up toward user, subtle emphasis)
+        nod_amplitude = -0.262  # -15° head pitch in radians (subtle emphasis)
+        nod_duration = 0.4  # Hold nod for 400ms (snappier motion)
+        nod_x_forward = 0.007  # 7mm forward movement during nod
 
         for peak_time in peak_times:
             # Sample Z and antenna values from pitch timeline at this moment

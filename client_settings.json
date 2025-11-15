@@ -1,0 +1,91 @@
+{
+    "enable_display_audio_visualizer": true,
+    "tts_mode": "api",
+    "api_tts_provider": "elevenlabs",
+    "stt_mode": "local",
+    "vosk_model_size": "small",
+    "SERVER_URL": "http://174.165.47.128:8765",
+    "DEVICE_ID": "reachy_mini_pi500",
+    "KEEP_TEMP_AUDIO_FILES": false,
+    "AUDIO_SAMPLE_RATE": 16000,
+    "SNOWBOY_AUDIO_CHUNK_SIZE": 2048,
+    "WAKEWORD_MODEL_DIR": "/home/user/reachy/pi_reachy_deployment/snowboy",
+    "WAKEWORD_RESOURCE_FILE": "/home/user/reachy/pi_reachy_deployment/snowboy/resources/common.res",
+    "WAKE_WORDS_AND_SENSITIVITIES": {
+        "GD_Laura.pmdl": 0.5,
+        "Wake_up_Laura.pmdl": 0.5,
+        "Laura.pmdl": 0.45,
+        "tookmycrazypills.pmdl": 0.5,
+        "claudecode.pmdl": 0.5,
+        "sendnote.pmdl": 0.5
+    },
+    "DISPLAY_SVG_PATH": "/home/user/reachy/pi_reachy_deployment/svg files/silhouette.svg",
+    "DISPLAY_BOOT_IMG_PATH": "/home/user/reachy/pi_reachy_deployment/assets/images/CC_images/boot/boot01.png",
+    "DISPLAY_WINDOW_SIZE": 512,
+    "QUERY_FILES_DIR": "/home/user/reachy/pi_reachy_deployment/query_files",
+    "QUERY_OFFLOAD_DIR": "/home/user/reachy/pi_reachy_deployment/query_offload",
+    "elevenlabs_default_voice_name": "qEwI395unGwWV1dn3Y65",
+    "elevenlabs_default_model": "eleven_flash_v2_5",
+    "cartesia_default_voice_id": "78f71eb3-187f-48b4-a763-952f2f4f838a",
+    "cartesia_default_model": "sonic-en",
+    "piper_default_model_path": "/home/user/reachy/pi_reachy_deployment/piper_models/en_US-ljspeech-low.onnx",
+    "piper_default_voice_name": "ljspeech",
+    "persona_voice_configs": {
+        "laura": {
+            "elevenlabs": {
+                "voice_name_or_id": "qEwI395unGwWV1dn3Y65",
+                "model": "eleven_flash_v2_5"
+            },
+            "cartesia": {
+                "voice_id": "78f71eb3-187f-48b4-a763-952f2f4f838a",
+                "model": "sonic-en"
+            },
+            "piper": {
+                "model_path": "/home/user/reachy/pi_reachy_deployment/piper_models/en_US-ljspeech-low.onnx",
+                "voice_name": "ljspeech"
+            }
+        },
+        "max": {
+            "elevenlabs": {
+                "voice_name_or_id": "uY96J30mUhYUIymmD5cu",
+                "model": "eleven_flash_v2_5"
+            },
+            "cartesia": {
+                "voice_id": "another-cartesia-id-for-max",
+                "model": "sonic-en"
+            },
+            "piper": {
+                "model_path": "/path/to/some/other_piper_model.onnx",
+                "voice_name": "speaker_for_max"
+            }
+        },
+        "client_default": {
+            "elevenlabs": {
+                "voice_name_or_id": "qEwI395unGwWV1dn3Y65",
+                "model": "eleven_flash_v2_5"
+            },
+            "cartesia": {
+                "voice_id": "78f71eb3-187f-48b4-a763-952f2f4f838a",
+                "model": "sonic-en"
+            },
+            "piper": {
+                "model_path": "/home/user/reachy/pi_reachy_deployment/piper_models/en_US-ljspeech-low.onnx",
+                "voice_name": "ljspeech"
+            }
+        }
+    },
+    "vad_settings": {
+        "energy_threshold": 0.01,
+        "continued_threshold_ratio": 0.65,
+        "silence_duration": 2.0,
+        "min_speech_duration": 0.3,
+        "speech_buffer_time_s": 0.2,
+        "frame_history_length": 10,
+        "initial_listen_timeout_s": 7.0,
+        "follow_up_initial_listen_timeout_s": 5.0,
+        "max_recording_time": 30.0,
+        "follow_up_max_recording_time_s": 20.0,
+        "vosk_reject_min_words": 1,
+        "vosk_reject_min_chars_if_single_word": 3
+    }
+}

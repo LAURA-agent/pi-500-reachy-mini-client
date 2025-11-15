@@ -6,23 +6,34 @@ import sys
 os.environ['JACK_NO_AUDIO_RESERVATION'] = '1'
 os.environ['JACK_NO_START_SERVER'] = '1'
 
-# Redirect stderr to suppress Jack library warnings
+# Suppress TensorFlow Lite warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress INFO and WARNING messages
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN custom operations
+os.environ['GLOG_minloglevel'] = '3'  # Suppress glog messages
+os.environ['TF_CPP_VMODULE'] = 'inference_feedback_manager=0'  # Suppress specific warnings
+
+# Redirect stderr to suppress Jack library warnings and TensorFlow Lite messages
 import contextlib
 _stderr_backup = sys.stderr
+_stderr_fd_backup = os.dup(2)  # Backup file descriptor 2 (stderr)
 _null = open(os.devnull, 'w')
 
 def suppress_jack_errors():
-    """Context manager to suppress Jack audio errors during PyAudio init"""
+    """Suppress Jack audio and TensorFlow errors at both Python and C++ levels"""
     sys.stderr = _null
+    os.dup2(_null.fileno(), 2)  # Redirect file descriptor 2 to /dev/null
 
 def restore_stderr():
     """Restore stderr after suppression"""
+    os.dup2(_stderr_fd_backup, 2)  # Restore file descriptor 2
     sys.stderr = _stderr_backup
 
 # Suppress before any audio imports
 suppress_jack_errors()
 
 import asyncio
+import base64
+import cv2
 import json
 import subprocess
 import time
@@ -66,6 +77,7 @@ from daemon_media_wrapper import DaemonMediaWrapper
 from wake_word_manager import WakeWordManager
 from speech_offset import SpeechOffsetPlayer
 from speech_analyzer import SpeechAnalyzer
+from bluetooth_audio_reactor import BluetoothAudioReactor
 import mood_extractor
 
 # Configuration and Utilities
@@ -78,8 +90,7 @@ from speech_capture.vosk_readiness_checker import vosk_readiness, ensure_vosk_re
 # Initialize colorama
 init()
 
-# Restore stderr after imports (Jack errors during PyAudio init are now suppressed)
-restore_stderr()
+# Keep stderr suppressed - will restore after AudioManager initialization in main()
 
 # Sound assets base path
 SOUND_BASE_PATH = Path("/home/user/more transfer/assets/sounds")
@@ -166,7 +177,7 @@ class PiMCPClient:
             head_tracker=self.head_tracker,
             daemon_client=self.daemon_client,
             movement_manager=None,  # Will be linked after MovementManager creation
-            debug_window=True  # Enable debug window to diagnose face tracking
+            debug_window=False  # Debug window disabled
         )
 
         # Initialize movement manager (100Hz control loop)
@@ -187,6 +198,9 @@ class PiMCPClient:
         self.speech_offset_player = SpeechOffsetPlayer(self.movement_manager)
         self.speech_analyzer = SpeechAnalyzer()
 
+        # Initialize Bluetooth audio reactor (real-time audio → motion)
+        self.bluetooth_reactor = BluetoothAudioReactor(self.movement_manager, self.audio_manager)
+
         # Register state callback for face tracking control
         self.state_tracker.register_callback(self._on_state_change)
 
@@ -199,6 +213,7 @@ class PiMCPClient:
         # Wake-from-sleep tracking for camera capture
         self._previous_state = None
         self._wake_from_sleep = False
+        self._capture_camera_on_wake = False  # Capture camera for all wake words
 
         # Pout mode tracking
         self._in_pout_mode = False
@@ -210,7 +225,7 @@ class PiMCPClient:
         
         # Initialize specialized managers
         self.input_manager = InputManager(self.audio_manager)
-        self.audio_coordinator = AudioCoordinator(self.audio_manager)
+        self.audio_coordinator = AudioCoordinator(self.audio_manager, self.speech_analyzer, self.speech_offset_player)
         self.speech_processor = SpeechProcessor(
             self.audio_manager, 
             self.transcriber, 
@@ -220,7 +235,8 @@ class PiMCPClient:
             self.speech_processor,
             self.audio_coordinator,
             self.tts_handler,
-            client_settings
+            client_settings,
+            self.movement_manager
         )
         self.notification_manager = NotificationManager(
             self.audio_coordinator,
@@ -244,7 +260,7 @@ class PiMCPClient:
         """Callback for state changes - controls face tracking and mood animations.
 
         Face tracking is ONLY active during idle/breathing state.
-        Disabled during listening, thinking, and speaking.
+        Disabled during listening, thinking, speaking, and bluetooth_listening.
         Mood animations are triggered when entering speaking state.
         """
         # Enable face tracking only during idle state
@@ -252,28 +268,27 @@ class PiMCPClient:
             self.camera_worker.set_head_tracking_enabled(True)
             print("[INFO] Face tracking ENABLED (idle/breathing)")
         else:
-            # Disable during all other states (listening, thinking, speaking, sleep, etc.)
+            # Disable during all other states (listening, thinking, speaking, bluetooth_listening, sleep, etc.)
             self.camera_worker.set_head_tracking_enabled(False)
             print(f"[INFO] Face tracking DISABLED ({new_state})")
 
         # Trigger mood animations when entering speaking state
-        # NOTE: This legacy code path may not be used anymore (Claude Code plugin uses cc_plugin_mood state)
-        # If used, it would need proper coordination like the cc_plugin_mood handler
+        # NOTE: DISABLED - Mood animations during speaking block speech-synchronized motion
+        # Speech offsets provide natural motion during speaking, mood animations conflict with this
+        # Claude Code plugin uses cc_plugin_mood state for dedicated mood playback outside of speaking
+
+        # if new_state == "speaking" and self._pending_mood:
+        #     mood_to_play = self._pending_mood
+        #     print(f"[WARNING] Legacy mood trigger in speaking state - this may cause coordination issues")
+        #     print(f"[INFO] Triggering mood animation: {mood_to_play}")
+        #
+        #     # Clear pending mood to prevent re-triggering
+        #     self._pending_mood = None
+
+        # Clear pending mood when entering speaking state (no longer used)
         if new_state == "speaking" and self._pending_mood:
-            mood_to_play = self._pending_mood
-            print(f"[WARNING] Legacy mood trigger in speaking state - this may cause coordination issues")
-            print(f"[INFO] Triggering mood animation: {mood_to_play}")
-
-            # Clear pending mood to prevent re-triggering
+            print(f"[INFO] Ignoring mood '{self._pending_mood}' during speaking (speech motion active)")
             self._pending_mood = None
-
-            # TODO: If this code path is actually used, implement proper coordination:
-            # 1. Pause breathing
-            # 2. Disable face tracking
-            # 3. Wait for coordination
-            # 4. Run mood (blocking, not background)
-            # 5. Resume breathing
-            # 6. Re-enable face tracking
 
     def enter_pout_mode(self, initial_body_yaw_deg: float = 0.0, entry_speed: str = "slow"):
         """Enter pout mode - Laura hunches into sleep pose and becomes upset.
@@ -437,6 +452,36 @@ class PiMCPClient:
 
         print(f"[POUT] Playing antenna pattern: {pattern}")
 
+    async def enter_bluetooth_listening(self):
+        """Enter Bluetooth listening mode - real-time audio monitoring with motion."""
+        print("[BLUETOOTH] Entering Bluetooth listening mode")
+
+        # Update state to bluetooth_listening (disables face tracking and wake word)
+        self.state_tracker.update_state("bluetooth_listening")
+
+        # Pause breathing during Bluetooth listening
+        self.movement_manager.pause_breathing()
+
+        # Start Bluetooth audio reactor
+        await self.bluetooth_reactor.start()
+
+        print("[BLUETOOTH] Bluetooth listening active - play audio from iPhone")
+
+    async def exit_bluetooth_listening(self):
+        """Exit Bluetooth listening mode and return to idle."""
+        print("[BLUETOOTH] Exiting Bluetooth listening mode")
+
+        # Stop Bluetooth audio reactor
+        await self.bluetooth_reactor.stop()
+
+        # Resume breathing
+        self.movement_manager.resume_breathing()
+
+        # Return to idle state (re-enables face tracking)
+        self.state_tracker.update_state("idle")
+
+        print("[BLUETOOTH] Returned to idle state")
+
     def start_reachy_threads(self):
         """Start Reachy control threads (MovementManager, CameraWorker)."""
         print("[INFO] Starting Reachy control threads...")
@@ -467,7 +512,7 @@ class PiMCPClient:
             registration_payload = {
                 "device_id": self.device_id,
                 "capabilities": {
-                    "input": ["text", "audio"],
+                    "input": ["text", "audio", "image"],
                     "output": ["text", "audio"],
                     "tts_mode": client_settings.get("tts_mode", "api"),
                     "api_tts_provider": get_active_tts_provider(),
@@ -502,31 +547,61 @@ class PiMCPClient:
 
         Args:
             transcript: User's speech transcript
-            wake_frame: Optional base64-encoded JPEG frame captured at wake from sleep
+            wake_frame: Optional base64-encoded JPEG camera frame captured on wake word
         """
         if not self.session_id or not self.mcp_session:
             print("[ERROR] Session not initialized. Cannot send message.")
             return {"text": "Error: Client session not ready.", "mood": "error"}
 
-        # Filter out short transcripts (2 words or less)
-        word_count = len(transcript.strip().split())
+        # Filter out short transcripts (2 words or less) - discard camera frame too
+        word_count = len(transcript.strip().split()) if transcript else 0
         if word_count <= 2:
-            print(f"[INFO] Rejecting short transcript ({word_count} word{'s' if word_count != 1 else ''}): '{transcript}'")
+            if wake_frame:
+                print(f"[INFO] Rejecting short transcript AND discarding camera frame ({word_count} word{'s' if word_count != 1 else ''}): '{transcript}'")
+            else:
+                print(f"[INFO] Rejecting short transcript ({word_count} word{'s' if word_count != 1 else ''}): '{transcript}'")
             return None
 
         try:
-            tool_call_args = {
-                "session_id": self.session_id,
-                "input_type": "text",
-                "payload": {"text": transcript},
-                "output_mode": ["text", "audio"],
-                "timestamp": datetime.utcnow().isoformat() + "Z"
-            }
-
-            # Include wake frame if provided
+            # Build messages array with proper image formatting if we have wake_frame
             if wake_frame:
-                tool_call_args["wake_frame"] = wake_frame
-                print(f"[WAKE] Including wake frame in MCP payload ({len(wake_frame)} chars)")
+                messages_content = [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": wake_frame
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": transcript
+                    }
+                ]
+                tool_call_args = {
+                    "session_id": self.session_id,
+                    "input_type": "multimodal",
+                    "payload": {
+                        "messages": [{
+                            "role": "user",
+                            "content": messages_content
+                        }]
+                    },
+                    "output_mode": ["text", "audio"],
+                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                }
+                print(f"[WAKE] Sending multimodal message with camera frame ({len(wake_frame)} chars) and transcript: '{transcript}'")
+                print(f"[WAKE DEBUG] Payload structure: input_type={tool_call_args['input_type']}, messages[0].content length={len(messages_content)}")
+            else:
+                # Text-only message (original format)
+                tool_call_args = {
+                    "session_id": self.session_id,
+                    "input_type": "text",
+                    "payload": {"text": transcript},
+                    "output_mode": ["text", "audio"],
+                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                }
 
             print(f"[INFO] Calling 'run_LAURA' tool...")
             response_payload = await self.mcp_session.call_tool("run_LAURA", arguments=tool_call_args)
@@ -568,6 +643,14 @@ class PiMCPClient:
             self.session_id = None
             return {"text": "Connection lost. Reconnecting...", "mood": "error"}
         except Exception as e:
+            # Catch httpx errors (RemoteProtocolError, etc.) when server closes mid-stream
+            if 'httpx' in str(type(e).__module__) or 'RemoteProtocolError' in str(type(e).__name__):
+                print(f"[ERROR] MCP server connection interrupted: {e}")
+                # Clear session - context manager will handle cleanup, loop will reconnect
+                self.mcp_session = None
+                self.session_id = None
+                return {"text": "Server restarted. Reconnecting...", "mood": "error"}
+            # All other errors
             print(f"[ERROR] Failed to call server: {e}")
             traceback.print_exc()
             return {"text": "Sorry, a communication problem occurred.", "mood": "error"}
@@ -762,18 +845,6 @@ class PiMCPClient:
                         model_name = wake_event_source.split('(')[1].rstrip(')')
                         print(f"[DEBUG] Extracted model_name: '{model_name}'")
                         
-                        # Check if this is a medicine acknowledgment wake word
-                        if model_name == "tookmycrazypills.pmdl":
-                            print("[INFO] Medicine taken acknowledgment via wake word")
-                            # Clear the medicine reminder
-                            await self.system_command_manager.system_manager.clear_reminder("medicine", self.mcp_session, self.session_id)
-                            # Play success sound (same as startup)
-                            success_sound = str(SOUND_BASE_PATH / "sound_effects" / "successfulloadup.mp3")
-                            if os.path.exists(success_sound):
-                                await self.audio_coordinator.play_audio_file(success_sound)
-                            self.state_tracker.update_state("idle")
-                            continue  # Skip everything else
-
                         # Check if this is the pout mode wake word (GD_Laura.pmdl)
                         if model_name == "GD_Laura.pmdl":
                             print("[POUT] GD_Laura wake word detected - entering pout mode")
@@ -800,13 +871,19 @@ class PiMCPClient:
                     elif wake_event_source == "keyboard_code" or self._should_route_to_claude_code(wake_event_source):
                         # Switch to Claude Code persona
                         self._switch_to_persona('claude_code')
-                    
+
+                    # Set flag to capture camera frame after speech (for all wake words)
+                    self._capture_camera_on_wake = True
+
                     # Initialize audio before updating display
                     await self.audio_manager.initialize_input()
-                    
+
                     # Now update display - mic is ready and persona is correct
                     self.state_tracker.update_state('listening')
-                    
+
+                    # Stop breathing motion during listening state
+                    self.movement_manager.pause_breathing()
+
                     # Play appropriate wake audio AFTER display update
                     if wake_event_source.startswith("wakeword"):
                         model_name = wake_event_source.split()[1].strip('()')
@@ -820,6 +897,7 @@ class PiMCPClient:
                             if os_module.path.exists(radar_ping):
                                 print("[DEBUG] Playing Claude Code radar ping...")
                                 await self.audio_coordinator.play_audio_file(radar_ping)
+                                await asyncio.sleep(0.3)
                                 print("[DEBUG] Radar ping playback complete")
                             else:
                                 print(f"[DEBUG] Radar ping file not found at: {radar_ping}")
@@ -830,6 +908,9 @@ class PiMCPClient:
                             if wake_audio:
                                 print(f"[DEBUG] About to play wake audio: {wake_audio}")
                                 await self.audio_coordinator.play_audio_file(wake_audio)
+                                # Extra wait to ensure audio fully completes before starting microphone
+                                await asyncio.sleep(0.3)
+                                print(f"[DEBUG] Wake audio playback complete, ready for VAD")
                             else:
                                 print(f"[DEBUG] No wake audio returned for model: {model_name}")
                     elif wake_event_source == "keyboard_code":
@@ -838,7 +919,8 @@ class PiMCPClient:
                         if os.path.exists(radar_ping):
                             print("[DEBUG] Playing Claude Code radar ping (keyboard triggered)...")
                             await self.audio_coordinator.play_audio_file(radar_ping)
-                    
+                            await asyncio.sleep(0.3)
+
                     # Capture speech - use push-to-talk mode for keyboard, VAD for wakeword
                     if wake_event_source in ["keyboard_laura", "keyboard_code"]:
                         print("[INFO] Using push-to-talk mode (no VAD timeouts)")
@@ -864,6 +946,20 @@ class PiMCPClient:
                     
                     if not transcript:
                         print("[INFO] No speech detected, returning to previous state")
+
+                        # Discard camera frame if waking from sleep (no valid speech)
+                        if self._wake_from_sleep:
+                            print("[WAKE] VAD timeout - discarding camera frame (no valid speech)")
+                            self._wake_from_sleep = False
+
+                        # Clear camera capture flag on timeout
+                        if self._capture_camera_on_wake:
+                            print("[WAKE] VAD timeout - clearing camera capture flag")
+                            self._capture_camera_on_wake = False
+
+                        # Resume breathing after timeout (no speech detected)
+                        self.movement_manager.resume_breathing()
+
                         # Restart wake word detection
                         self.input_manager.restart_wake_word_detection()
                         # Determine the appropriate return state based on context
@@ -884,30 +980,33 @@ class PiMCPClient:
                     if current_state == "code":
                         print(f"[INFO] Code mode active - injecting to Claude Code: '{transcript}'")
                         self.state_tracker.update_state('thinking')
+                        self.movement_manager.resume_breathing()
                         await self.inject_to_claude_code(transcript)
                         self.state_tracker.update_state('code')
                         continue
-                    
+
                     # Direct injection to Claude Code if SHIFT+Left Meta was used OR specific wake word
                     if wake_event_source == "keyboard_code" or self._should_route_to_claude_code(wake_event_source):
                         print(f"[INFO] Injecting directly to Claude Code: '{transcript}'")
-                        
+
                         self.state_tracker.update_state('thinking')
-                        
+                        self.movement_manager.resume_breathing()
+
                         # Data processing sound already started by immediate feedback
                         # Just inject with phase transitions
                         await self.inject_to_claude_code_with_sounds(transcript, None)
-                        
+
                         # Reset any lingering conversation state after Claude Code
                         self.conversation_manager.reset_conversation_state()
-                        
+
                         self.state_tracker.update_state('idle')
                         continue
-                    
+
                     # Check for note transfer wake word
                     if self._should_send_note_to_mac(wake_event_source):
                         print(f"[INFO] Note transfer wake word detected - sending pi500_note.txt to Mac")
                         self.state_tracker.update_state('thinking')
+                        self.movement_manager.resume_breathing()
                         await self.send_note_to_mac()
                         self.state_tracker.update_state('idle')
                         continue
@@ -915,12 +1014,17 @@ class PiMCPClient:
                     # Check for send Enter key wake word
                     if self._should_send_enter_key(wake_event_source):
                         print(f"[INFO] Send Enter wake word detected - sending Enter key")
+                        self.movement_manager.resume_breathing()
                         await self.send_enter_key()
+                        self.input_manager.restart_wake_word_detection()
+                        self.state_tracker.update_state('idle')
                         continue
-                    
+
                     # Check for system commands
                     is_cmd, cmd_type, cmd_arg = self.system_command_manager.detect_system_command(transcript)
                     if is_cmd:
+                        self.state_tracker.update_state('thinking')
+                        self.movement_manager.resume_breathing()
                         await self.system_command_manager.handle_system_command(
                             cmd_type, cmd_arg, self.mcp_session,
                             self.tts_handler, self.audio_coordinator, self.state_tracker
@@ -931,27 +1035,44 @@ class PiMCPClient:
                     # Check for document uploads
                     await self.system_command_manager.check_and_upload_documents(self.mcp_session, self.session_id)
 
-                    # Capture camera frame if waking from sleep
+                    # Capture camera frame if wake word was triggered
                     wake_frame = None
-                    if self._wake_from_sleep:
-                        print("[WAKE] Capturing camera frame at VAD stop (wake from sleep)")
+                    if self._capture_camera_on_wake:
+                        print("[WAKE] Capturing camera frame after wake word")
                         try:
-                            frame_bytes = self.daemon_client.get_camera_frame()
-                            if frame_bytes:
-                                # Encode as base64 for transmission in MCP payload
-                                import base64
-                                wake_frame = base64.b64encode(frame_bytes).decode('utf-8')
-                                print(f"[WAKE] Camera frame captured: {len(wake_frame)} chars (base64)")
+                            # Get frame from media manager (returns numpy array)
+                            frame = self.media_manager.get_frame()
+                            if frame is not None:
+                                height, width = frame.shape[:2]
+                                print(f"[WAKE] Original frame size: {width}x{height}")
+
+                                # Encode numpy array as JPEG
+                                success, jpeg_bytes = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                                if success:
+                                    jpeg_size = len(jpeg_bytes.tobytes())
+                                    print(f"[WAKE] JPEG encoded: {jpeg_size} bytes ({jpeg_size/1024:.1f} KB)")
+
+                                    # Encode JPEG bytes as base64 for transmission
+                                    wake_frame = base64.b64encode(jpeg_bytes.tobytes()).decode('utf-8')
+                                    print(f"[WAKE] Base64 encoded: {len(wake_frame)} chars ({len(wake_frame)/1024:.1f} KB)")
+                                else:
+                                    print("[WAKE] Failed to encode frame as JPEG")
                             else:
                                 print("[WAKE] Camera frame capture failed (no data)")
                         except Exception as e:
                             print(f"[WAKE] Camera frame capture error: {e}")
+                            traceback.print_exc()
 
-                        # Clear wake flag after capture
+                        # Clear capture flag
+                        self._capture_camera_on_wake = False
+
+                    # Clear sleep wake flag if it was set
+                    if self._wake_from_sleep:
                         self._wake_from_sleep = False
 
                     # Process normal conversation
                     self.state_tracker.update_state('thinking')
+                    self.movement_manager.resume_breathing()
                     response = await self.send_to_server(transcript, wake_frame=wake_frame)
                     
                     # Only process response if not filtered out
@@ -971,8 +1092,9 @@ class PiMCPClient:
             except Exception as e:
                 print(f"[ERROR] Error in main loop: {e}")
                 traceback.print_exc()
-                self.state_tracker.update_state("error", text="System Error")
-                await asyncio.sleep(2)
+                # Return to idle on error to recover
+                self.state_tracker.update_state("idle")
+                await asyncio.sleep(0.5)
                 # Return to appropriate state based on current mode
                 return_state = "code" if self.state_tracker.get_state() == "code" else "idle"
                 self.state_tracker.update_state(return_state)
@@ -1008,24 +1130,28 @@ class PiMCPClient:
                                 exact_duration = audio_info.info.length
                                 print(f"[TTS Conversation] Exact audio duration: {exact_duration:.2f}s")
 
-                                # Speech-synchronized motion
+                                # Speech-synchronized motion with guaranteed cleanup
+                                motion_started = False
                                 try:
                                     analysis = self.speech_analyzer.analyze(audio_file_path, text)
                                     self.speech_offset_player.load_timeline(analysis)
                                     audio_start = time.time()
                                     self.speech_offset_player.play(audio_start)
+                                    motion_started = True
                                     print(f"[TTS Conversation] Speech motion playback started")
+
+                                    await asyncio.sleep(exact_duration)
+
                                 except Exception as motion_error:
-                                    print(f"[TTS Conversation] Speech motion failed: {motion_error}")
-                                    # Continue without motion - TTS will still play
-
-                                await asyncio.sleep(exact_duration)
-
-                                # Stop speech motion
-                                try:
-                                    self.speech_offset_player.stop()
-                                except Exception as stop_error:
-                                    print(f"[TTS Conversation] Failed to stop speech motion: {stop_error}")
+                                    print(f"[TTS Conversation] Speech motion error: {motion_error}")
+                                finally:
+                                    # ALWAYS stop speech motion, no matter what
+                                    if motion_started:
+                                        try:
+                                            self.speech_offset_player.stop()
+                                            print(f"[TTS Conversation] Speech motion stopped")
+                                        except Exception as stop_error:
+                                            print(f"[TTS Conversation] Failed to stop speech motion: {stop_error}")
 
                             except Exception as mutagen_error:
                                 print(f"[TTS Conversation] Mutagen error: {mutagen_error}, falling back to estimation")
@@ -1083,24 +1209,28 @@ class PiMCPClient:
                                 exact_duration = audio_info.info.length
                                 print(f"[TTS Working] Exact audio duration: {exact_duration:.2f}s")
 
-                                # Speech-synchronized motion
+                                # Speech-synchronized motion with guaranteed cleanup
+                                motion_started = False
                                 try:
                                     analysis = self.speech_analyzer.analyze(audio_file_path, text)
                                     self.speech_offset_player.load_timeline(analysis)
                                     audio_start = time.time()
                                     self.speech_offset_player.play(audio_start)
+                                    motion_started = True
                                     print(f"[TTS Working] Speech motion playback started")
+
+                                    await asyncio.sleep(exact_duration)
+
                                 except Exception as motion_error:
-                                    print(f"[TTS Working] Speech motion failed: {motion_error}")
-                                    # Continue without motion - TTS will still play
-
-                                await asyncio.sleep(exact_duration)
-
-                                # Stop speech motion
-                                try:
-                                    self.speech_offset_player.stop()
-                                except Exception as stop_error:
-                                    print(f"[TTS Working] Failed to stop speech motion: {stop_error}")
+                                    print(f"[TTS Working] Speech motion error: {motion_error}")
+                                finally:
+                                    # ALWAYS stop speech motion, no matter what
+                                    if motion_started:
+                                        try:
+                                            self.speech_offset_player.stop()
+                                            print(f"[TTS Working] Speech motion stopped")
+                                        except Exception as stop_error:
+                                            print(f"[TTS Working] Failed to stop speech motion: {stop_error}")
 
                             except Exception as mutagen_error:
                                 print(f"[TTS Working] Mutagen error: {mutagen_error}, falling back to estimation")
@@ -1136,8 +1266,11 @@ class PiMCPClient:
 
             print(f"[API] Display update request: state={state}, mood={mood}")
 
-            # Update display
-            self.state_tracker.update_state(state, mood=mood, text=text)
+            # Update display - only pass mood for speaking state
+            if state == "speaking" and mood:
+                self.state_tracker.update_state(state, mood=mood, text=text)
+            else:
+                self.state_tracker.update_state(state, text=text)
 
             return web.json_response({
                 "status": "success",
@@ -1530,8 +1663,8 @@ class PiMCPClient:
                             if os.path.exists(startup_sound):
                                 try:
                                     print(f"{Fore.CYAN}Playing startup audio...{Fore.WHITE}")
-                                    # Use idle for Claude Code profile, sleep for LAURA
-                                    final_state = 'idle' if self.state_tracker.display_profile == 'claude_code' else 'sleep'
+                                    # Always start in idle state
+                                    final_state = 'idle'
                                     self.state_tracker.update_state(final_state)
                                     await self.audio_coordinator.play_audio_file(startup_sound)
                                     print(f"{Fore.GREEN}✓ Startup audio complete{Fore.WHITE}")
@@ -1540,8 +1673,8 @@ class PiMCPClient:
                         else:
                             # Reconnection success - brief audio notification
                             print(f"{Fore.GREEN}✓ Reconnected to MCP server{Fore.WHITE}")
-                            # Use idle for Claude Code profile, sleep for LAURA
-                            final_state = 'idle' if self.state_tracker.display_profile == 'claude_code' else 'sleep'
+                            # Always start in idle state
+                            final_state = 'idle'
                             self.state_tracker.update_state(final_state)
                         
                         print(f"{Fore.MAGENTA}🎧 Listening for wake word or press Raspberry button to begin...{Fore.WHITE}")
@@ -1584,8 +1717,9 @@ class PiMCPClient:
                     print("[INFO] Code mode active - speech will be routed to Claude Code")
                     code_mode_active = True
                 else:
-                    self.state_tracker.update_state("error", text="Server Offline")
-                
+                    # Server offline - stay in idle
+                    self.state_tracker.update_state("idle")
+
                 if not code_mode_active:
                     print(f"[INFO] Retrying connection in 30 seconds...")
                     await asyncio.sleep(30)
@@ -1604,8 +1738,9 @@ class PiMCPClient:
                     print("[INFO] Code mode active - speech will be routed to Claude Code")
                     code_mode_active = True
                 else:
-                    self.state_tracker.update_state("error", text="Connection Error")
-                
+                    # Connection error - stay in idle
+                    self.state_tracker.update_state("idle")
+
                 if not code_mode_active:
                     print(f"[INFO] Retrying connection in 30 seconds...")
                     await asyncio.sleep(30)
@@ -1687,9 +1822,9 @@ class PiMCPClient:
         
         try:
             print(f"[INFO] Routing to Claude Code: '{transcript}'")
-            
+
             # Update display to show processing
-            self.state_tracker.update_state("thinking", mood="focused")
+            self.state_tracker.update_state("thinking")
             
             # Process with Claude Code using health check and session management
             result = await execute_claude_code_with_health_check(transcript)
@@ -1763,7 +1898,7 @@ class PiMCPClient:
             # Update interaction time on successful completion
             self.input_manager.update_last_interaction()
             # Return to idle state
-            self.state_tracker.update_state("idle", mood="casual")
+            self.state_tracker.update_state("idle")
     
     def _should_speak_claude_response(self, response: str, original_command: str) -> bool:
         """Determine if Claude Code response should be spoken"""
@@ -1846,7 +1981,6 @@ class PiMCPClient:
                 
         except Exception as e:
             print(f"[ERROR] Failed to inject to Claude Code: {e}")
-            import traceback
             traceback.print_exc()
     
     async def send_enter_key(self):
@@ -1874,7 +2008,6 @@ class PiMCPClient:
                 
         except Exception as e:
             print(f"[ERROR] Failed to send Enter key: {e}")
-            import traceback
             traceback.print_exc()
     
     def _should_route_to_claude_code_from_wake(self, wake_event_source: str) -> bool:
@@ -2129,8 +2262,12 @@ async def main():
 
     print("[INFO] Initializing Pi MCP Client...")
     client = PiMCPClient(server_url=SERVER_URL, device_id=DEVICE_ID)
+
+    # Restore stderr after client initialization (Jack/TF errors now suppressed)
+    restore_stderr()
+
     print("[INFO] Client initialized successfully")
-    
+
     try:
         await client.run()
     except KeyboardInterrupt:

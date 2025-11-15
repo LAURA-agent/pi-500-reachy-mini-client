@@ -218,8 +218,11 @@ class DisplayManager:
         """Update display state immediately"""
         while not self.initialized:
             await asyncio.sleep(0.1)
-            
-        if mood is None:
+
+        # Idle and sleep states always use neutral mood (don't inherit from previous state)
+        if state in ['idle', 'sleep']:
+            mood = 'casual'  # Maps to 'nuetral' in LAURA mood system
+        elif mood is None:
             mood = self.current_mood
 
         # Map mood using client config

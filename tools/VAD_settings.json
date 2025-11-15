@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "current": {
+      "silero_threshold": 0.5,
+      "silence_duration": 2.0,
+      "speech_buffer_time": 1.0,
+      "min_speech_duration": 0.4,
+      "max_recording_time": 45,
+      "chunk_size": 2048
+    }
+  },
+  "active_profile": "current"
+}

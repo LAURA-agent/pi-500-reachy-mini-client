@@ -1,0 +1,45 @@
+{
+  "scene_defaults": {
+    "turn_count": 6,
+    "intensity": "medium",
+    "save_transcript": true
+  },
+
+  "available_agents": {
+    "claude": {
+      "display_name": "Claude",
+      "device": "gameboy_1",
+      "enabled": true
+    },
+    "laura": {
+      "display_name": "Laura",
+      "device": "gameboy_2",
+      "enabled": true
+    },
+    "mari": {
+      "display_name": "Mari",
+      "device": "gameboy_3",
+      "enabled": false
+    }
+  },
+
+  "turn_order_modes": {
+    "alternating": "Simple back-and-forth for 2 agents",
+    "round_robin": "Cycles through all agents in order",
+    "manual": "User specifies exact order",
+    "director": "Claude decides who speaks when"
+  },
+
+  "validation": {
+    "prevent_consecutive_same_speaker": true,
+    "min_turns": 1,
+    "max_turns": 20,
+    "min_agents": 2,
+    "max_agents": 4
+  },
+
+  "debug": {
+    "verbose_logging": false,
+    "show_timing_metrics": false
+  }
+}

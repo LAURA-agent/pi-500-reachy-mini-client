@@ -1,0 +1,69 @@
+{
+  "sprite_galleries": {
+    "talking": {
+      "path": "sprites/talking_images.png",
+      "description": "Sprites with open mouths for when speaking",
+      "sprites": [
+        "disagree01.png",
+        "disagree02.png",
+        "embarrassed01.png",
+        "excited01.png",
+        "exhausted01.png",
+        "explain_happy01.png",
+        "explain_happy02.png",
+        "explain_happy03.png",
+        "happy01.png",
+        "happy02.png",
+        "happy03.png",
+        "happy04.png",
+        "nuetral01.png",
+        "skeptical01.png",
+        "skeptical02.png",
+        "surprised02.png",
+        "talking_annoyed01.png",
+        "worried01.png"
+      ]
+    },
+    "idle": {
+      "path": "sprites/idle_images.png",
+      "description": "Sprites with closed mouths for when listening",
+      "sprites": [
+        "annoyed01.png",
+        "annoyed02.png",
+        "annoyed03.png",
+        "confused01.png",
+        "confused02.png",
+        "confused03.png",
+        "exhausted01.png",
+        "exhausted02.png",
+        "exhausted03.png",
+        "nuetral01.png",
+        "pout01.png",
+        "pout02.png",
+        "pout03.png",
+        "scheming01.png",
+        "scheming02.png",
+        "scheming03.png",
+        "smug02.png",
+        "smug04.png",
+        "smug05.png",
+        "smug06.png",
+        "suspicious01.png",
+        "suspicious02.png"
+      ]
+    }
+  },
+  "sprite_instructions": "You will see TWO sprite gallery images in this conversation:\n1. FIRST GALLERY (talking_images.png) - Contains sprites with OPEN MOUTHS for when you're SPEAKING\n2. SECOND GALLERY (idle_images.png) - Contains sprites with CLOSED MOUTHS for when you're LISTENING\n\nYOU MUST SELECT ONE SPRITE FROM EACH GALLERY:\n- speaking_image: Pick from FIRST gallery (open mouth sprites)\n- idle_image: Pick from SECOND gallery (closed mouth sprites)\n\n✅ CORRECT: speaking_image: \"excited01.png\", idle_image: \"scheming01.png\"\n❌ WRONG: speaking_image: \"annoyed01.png\", idle_image: \"pout01.png\" (both from idle!)",
+  "dynamic_loading": {
+    "enabled": true,
+    "scan_directories": false,
+    "use_config_lists": true,
+    "cache_galleries": true,
+    "optimize_size": 1568
+  },
+  "metadata": {
+    "version": "1.0",
+    "last_updated": "2024-09-26",
+    "notes": "This config allows dynamic sprite list updates without code changes"
+  }
+}

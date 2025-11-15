@@ -1,0 +1,2 @@
+ELEVENLABS_API_KEY = "sk_b73b395f4d4a3eebdd597dc5da9aec8b4fdd0d64fdf872eb"
+CARTESIA_API_KEY = "sk_car_TcvcdEyP6v5tyPm1CyWZHM"

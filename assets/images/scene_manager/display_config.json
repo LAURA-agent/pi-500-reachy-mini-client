@@ -1,0 +1,59 @@
+{
+  "emotion_mapping": {
+    "laura": {
+      "happy": {
+        "idle": "idle/nuetral01.png",
+        "talking": "talking/happy01.png"
+      },
+      "annoyed": {
+        "idle": "idle/annoyed01.png",
+        "talking": "talking/talking_annoyed01.png"
+      },
+      "scheming": {
+        "idle": "idle/scheming01.png",
+        "talking": "talking/smug01.png"
+      },
+      "confused": {
+        "idle": "idle/confused01.png",
+        "talking": "talking/worried01.png"
+      },
+      "excited": {
+        "idle": "idle/smug01.png",
+        "talking": "talking/excited01.png"
+      },
+      "exhausted": {
+        "idle": "idle/exhausted01.png",
+        "talking": "talking/exhausted01.png"
+      },
+      "smug": {
+        "idle": "idle/smug01.png",
+        "talking": "talking/defiant01.png"
+      },
+      "neutral": {
+        "idle": "idle/nuetral01.png",
+        "talking": "talking/nuetral01.png"
+      }
+    },
+    "claude": {
+      "neutral": "claude_neutral.png",
+      "helpful": "claude_helpful.png",
+      "snarky": "claude_snarky.png"
+    }
+  },
+  "display_settings": {
+    "gameboy_resolution": "640x480",
+    "image_path_base": "/home/user/scene_images/",
+    "default_emotion": "neutral",
+    "transition_time_ms": 100
+  },
+  "emotion_instructions": {
+    "happy": "Positive moments, victories, satisfaction",
+    "annoyed": "Frustration, eye rolls, mild anger",
+    "scheming": "Plotting, mischievous planning",
+    "confused": "Bewilderment, not understanding",
+    "excited": "High energy, enthusiasm, new ideas",
+    "exhausted": "Done with everything, tired, over it",
+    "smug": "Superior, know-it-all, condescending",
+    "neutral": "Default state, listening, calm"
+  }
+}

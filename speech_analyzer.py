@@ -224,12 +224,13 @@ class SpeechAnalyzer:
         std_energy = float(np.std(energy_values))
 
         # Find peaks (potential emphasis points)
-        # Peak = energy > mean + 0.3*std (very low threshold to catch all syllables)
-        threshold = mean_energy + 0.3 * std_energy
+        # Peak = energy > mean + 0.2*std (lower threshold for more frequent nods)
+        threshold = mean_energy + 0.2 * std_energy
 
-        # Use find_peaks with minimum distance of 0.2s between peaks
+        # Use find_peaks with minimum distance between peaks to prevent overlapping head nods
+        # Nod duration = 400ms, so require 500ms spacing for clean separation
         frame_duration = self.hop_length / self.sample_rate
-        min_distance_frames = int(0.2 / frame_duration)  # 0.2 seconds minimum spacing
+        min_distance_frames = int(0.5 / frame_duration)  # 0.5 seconds minimum spacing
 
         peak_indices, _ = find_peaks(
             energy_values,
