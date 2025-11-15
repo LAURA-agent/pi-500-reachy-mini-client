@@ -458,7 +458,7 @@ class PiMCPClient:
         print(f"[POUT] Playing antenna pattern: {pattern}")
 
     async def enter_bluetooth_ready(self):
-        """Enter bluetooth_ready state - waiting for audio from iPhone."""
+        """Enter bluetooth_ready state - buffered capture from iPhone audio."""
         print("[BLUETOOTH] Entering bluetooth_ready state")
 
         # Stop wake word detection (prevents accidental triggers during Bluetooth audio)
@@ -467,19 +467,15 @@ class PiMCPClient:
         # Update state to bluetooth_ready
         self.state_tracker.update_state("bluetooth_ready")
 
-        # Keep breathing active (natural motion while waiting)
-        # Breathing will be paused when audio starts playing
+        # Keep breathing active - capturer handles pause/resume during playback
 
-        # Start Bluetooth audio reactor
+        # Start Bluetooth buffered capturer (detects stream, mutes, buffers, plays back)
         await self.bluetooth_capturer.start()
-
-        # Start audio monitoring task
-        self._bluetooth_monitoring_task = asyncio.create_task(self._monitor_bluetooth_audio())
 
         # Start 2-minute timeout task
         self._bluetooth_timeout_task = asyncio.create_task(self._bluetooth_timeout())
 
-        print("[BLUETOOTH] bluetooth_ready active - waiting for iPhone audio")
+        print("[BLUETOOTH] bluetooth_ready active - buffered capture running")
 
     async def enter_bluetooth_playing(self):
         """Enter bluetooth_playing state - audio detected, applying motion offsets."""
@@ -502,16 +498,12 @@ class PiMCPClient:
         """Exit all Bluetooth states and return to idle."""
         print("[BLUETOOTH] Exiting Bluetooth mode")
 
-        # Cancel monitoring and timeout tasks
-        if hasattr(self, '_bluetooth_monitoring_task') and self._bluetooth_monitoring_task:
-            self._bluetooth_monitoring_task.cancel()
-            self._bluetooth_monitoring_task = None
-
+        # Cancel timeout task
         if hasattr(self, '_bluetooth_timeout_task') and self._bluetooth_timeout_task:
             self._bluetooth_timeout_task.cancel()
             self._bluetooth_timeout_task = None
 
-        # Stop Bluetooth audio reactor
+        # Stop Bluetooth buffered capturer
         await self.bluetooth_capturer.stop()
 
         # Resume breathing if paused
