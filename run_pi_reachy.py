@@ -77,7 +77,7 @@ from daemon_media_wrapper import DaemonMediaWrapper
 from wake_word_manager import WakeWordManager
 from speech_offset import SpeechOffsetPlayer
 from speech_analyzer import SpeechAnalyzer
-from bluetooth_audio_reactor import BluetoothAudioReactor
+from bluetooth_buffered_capturer import BluetoothBufferedCapturer
 import mood_extractor
 
 # Configuration and Utilities
@@ -198,9 +198,6 @@ class PiMCPClient:
         self.speech_offset_player = SpeechOffsetPlayer(self.movement_manager)
         self.speech_analyzer = SpeechAnalyzer()
 
-        # Initialize Bluetooth audio reactor (real-time audio → motion)
-        self.bluetooth_reactor = BluetoothAudioReactor(self.movement_manager, self.audio_manager)
-
         # Register state callback for face tracking control
         self.state_tracker.register_callback(self._on_state_change)
 
@@ -226,6 +223,14 @@ class PiMCPClient:
         # Initialize specialized managers
         self.input_manager = InputManager(self.audio_manager)
         self.audio_coordinator = AudioCoordinator(self.audio_manager, self.speech_analyzer, self.speech_offset_player)
+
+        # Initialize Bluetooth buffered capturer (buffered audio → sentence analysis → synchronized playback)
+        self.bluetooth_capturer = BluetoothBufferedCapturer(
+            self.audio_coordinator,
+            self.movement_manager,
+            self.state_tracker
+        )
+
         self.speech_processor = SpeechProcessor(
             self.audio_manager, 
             self.transcriber, 
@@ -466,7 +471,7 @@ class PiMCPClient:
         # Breathing will be paused when audio starts playing
 
         # Start Bluetooth audio reactor
-        await self.bluetooth_reactor.start()
+        await self.bluetooth_capturer.start()
 
         # Start audio monitoring task
         self._bluetooth_monitoring_task = asyncio.create_task(self._monitor_bluetooth_audio())
@@ -507,7 +512,7 @@ class PiMCPClient:
             self._bluetooth_timeout_task = None
 
         # Stop Bluetooth audio reactor
-        await self.bluetooth_reactor.stop()
+        await self.bluetooth_capturer.stop()
 
         # Resume breathing if paused
         self.movement_manager.resume_breathing()
@@ -534,7 +539,7 @@ class PiMCPClient:
                 await asyncio.sleep(0.1)
 
                 # Get reactor state
-                reactor_state = self.bluetooth_reactor.get_state()
+                reactor_state = self.bluetooth_capturer.get_state()
                 is_receiving_audio = reactor_state['is_receiving_audio']
                 current_state = self.state_tracker.get_state()
 
