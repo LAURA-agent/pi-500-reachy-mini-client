@@ -260,7 +260,7 @@ class PiMCPClient:
         """Callback for state changes - controls face tracking and mood animations.
 
         Face tracking is ONLY active during idle/breathing state.
-        Disabled during listening, thinking, speaking, and bluetooth_listening.
+        Disabled during listening, thinking, speaking, bluetooth_ready, and bluetooth_playing.
         Mood animations are triggered when entering speaking state.
         """
         # Enable face tracking only during idle state
@@ -268,7 +268,7 @@ class PiMCPClient:
             self.camera_worker.set_head_tracking_enabled(True)
             print("[INFO] Face tracking ENABLED (idle/breathing)")
         else:
-            # Disable during all other states (listening, thinking, speaking, bluetooth_listening, sleep, etc.)
+            # Disable during all other states (listening, thinking, speaking, bluetooth states, sleep, etc.)
             self.camera_worker.set_head_tracking_enabled(False)
             print(f"[INFO] Face tracking DISABLED ({new_state})")
 
@@ -452,35 +452,135 @@ class PiMCPClient:
 
         print(f"[POUT] Playing antenna pattern: {pattern}")
 
-    async def enter_bluetooth_listening(self):
-        """Enter Bluetooth listening mode - real-time audio monitoring with motion."""
-        print("[BLUETOOTH] Entering Bluetooth listening mode")
+    async def enter_bluetooth_ready(self):
+        """Enter bluetooth_ready state - waiting for audio from iPhone."""
+        print("[BLUETOOTH] Entering bluetooth_ready state")
 
-        # Update state to bluetooth_listening (disables face tracking and wake word)
-        self.state_tracker.update_state("bluetooth_listening")
+        # Stop wake word detection (prevents accidental triggers during Bluetooth audio)
+        self.input_manager.stop_wake_word_detection()
 
-        # Pause breathing during Bluetooth listening
-        self.movement_manager.pause_breathing()
+        # Update state to bluetooth_ready
+        self.state_tracker.update_state("bluetooth_ready")
+
+        # Keep breathing active (natural motion while waiting)
+        # Breathing will be paused when audio starts playing
 
         # Start Bluetooth audio reactor
         await self.bluetooth_reactor.start()
 
-        print("[BLUETOOTH] Bluetooth listening active - play audio from iPhone")
+        # Start audio monitoring task
+        self._bluetooth_monitoring_task = asyncio.create_task(self._monitor_bluetooth_audio())
 
-    async def exit_bluetooth_listening(self):
-        """Exit Bluetooth listening mode and return to idle."""
-        print("[BLUETOOTH] Exiting Bluetooth listening mode")
+        # Start 2-minute timeout task
+        self._bluetooth_timeout_task = asyncio.create_task(self._bluetooth_timeout())
+
+        print("[BLUETOOTH] bluetooth_ready active - waiting for iPhone audio")
+
+    async def enter_bluetooth_playing(self):
+        """Enter bluetooth_playing state - audio detected, applying motion offsets."""
+        print("[BLUETOOTH] Entering bluetooth_playing state - audio detected")
+
+        # Update state to bluetooth_playing
+        self.state_tracker.update_state("bluetooth_playing")
+
+        # Pause breathing so speech offsets can control movement
+        self.movement_manager.pause_breathing()
+
+        # Cancel timeout task (audio detected, don't exit)
+        if hasattr(self, '_bluetooth_timeout_task') and self._bluetooth_timeout_task:
+            self._bluetooth_timeout_task.cancel()
+            self._bluetooth_timeout_task = None
+
+        print("[BLUETOOTH] bluetooth_playing active - motion synchronized with audio")
+
+    async def exit_bluetooth_mode(self):
+        """Exit all Bluetooth states and return to idle."""
+        print("[BLUETOOTH] Exiting Bluetooth mode")
+
+        # Cancel monitoring and timeout tasks
+        if hasattr(self, '_bluetooth_monitoring_task') and self._bluetooth_monitoring_task:
+            self._bluetooth_monitoring_task.cancel()
+            self._bluetooth_monitoring_task = None
+
+        if hasattr(self, '_bluetooth_timeout_task') and self._bluetooth_timeout_task:
+            self._bluetooth_timeout_task.cancel()
+            self._bluetooth_timeout_task = None
 
         # Stop Bluetooth audio reactor
         await self.bluetooth_reactor.stop()
 
-        # Resume breathing
+        # Resume breathing if paused
         self.movement_manager.resume_breathing()
 
-        # Return to idle state (re-enables face tracking)
+        # Restart wake word detection
+        self.input_manager.restart_wake_word_detection()
+
+        # Return to idle state
         self.state_tracker.update_state("idle")
 
         print("[BLUETOOTH] Returned to idle state")
+
+    async def _monitor_bluetooth_audio(self):
+        """Monitor Bluetooth audio for state transitions."""
+        print("[BLUETOOTH] Audio monitoring started")
+
+        last_audio_state = False
+        silence_start_time = None
+        SILENCE_DURATION = 0.5  # 500ms of silence before returning to ready
+
+        try:
+            while True:
+                # Check audio state every 100ms
+                await asyncio.sleep(0.1)
+
+                # Get reactor state
+                reactor_state = self.bluetooth_reactor.get_state()
+                is_receiving_audio = reactor_state['is_receiving_audio']
+                current_state = self.state_tracker.get_state()
+
+                # State transition: bluetooth_ready → bluetooth_playing
+                if current_state == "bluetooth_ready" and is_receiving_audio and not last_audio_state:
+                    print("[BLUETOOTH] Audio detected - transitioning to bluetooth_playing")
+                    await self.enter_bluetooth_playing()
+                    silence_start_time = None
+
+                # State transition: bluetooth_playing → bluetooth_ready (with debounce)
+                elif current_state == "bluetooth_playing" and not is_receiving_audio:
+                    if silence_start_time is None:
+                        silence_start_time = time.time()
+                    elif (time.time() - silence_start_time) > SILENCE_DURATION:
+                        print("[BLUETOOTH] Audio stopped - returning to bluetooth_ready")
+                        # Resume breathing
+                        self.movement_manager.resume_breathing()
+                        # Update state
+                        self.state_tracker.update_state("bluetooth_ready")
+                        silence_start_time = None
+                elif current_state == "bluetooth_playing" and is_receiving_audio:
+                    # Reset silence timer if audio returns
+                    silence_start_time = None
+
+                last_audio_state = is_receiving_audio
+
+        except asyncio.CancelledError:
+            print("[BLUETOOTH] Audio monitoring cancelled")
+        except Exception as e:
+            print(f"[BLUETOOTH ERROR] Monitoring loop error: {e}")
+            await self.exit_bluetooth_mode()
+
+    async def _bluetooth_timeout(self):
+        """Exit Bluetooth mode after 2 minutes if no audio detected."""
+        try:
+            print("[BLUETOOTH] 2-minute timeout started")
+            await asyncio.sleep(120)  # 2 minutes
+
+            # If we reach here, no audio was detected for 2 minutes
+            current_state = self.state_tracker.get_state()
+            if current_state in ["bluetooth_ready", "bluetooth_playing"]:
+                print("[BLUETOOTH] Timeout reached (2 minutes) - exiting Bluetooth mode")
+                await self.exit_bluetooth_mode()
+
+        except asyncio.CancelledError:
+            print("[BLUETOOTH] Timeout cancelled - audio detected")
 
     def start_reachy_threads(self):
         """Start Reachy control threads (MovementManager, CameraWorker)."""
@@ -862,6 +962,12 @@ class PiMCPClient:
                                 await self.audio_coordinator.play_audio_file(wake_audio)
 
                             print("[POUT] Pout mode active - LAURA will stay in pout pose until exit wake word")
+                            continue  # Skip normal conversation flow
+
+                        # Special handler: Bluetooth mode wake word
+                        if model_name == "tookmycrazypills.pmdl":
+                            print("[BLUETOOTH] tookmycrazypills wake word detected - entering Bluetooth mode")
+                            await self.enter_bluetooth_ready()
                             continue  # Skip normal conversation flow
 
                     # Switch persona (display + voice) FIRST based on wake source

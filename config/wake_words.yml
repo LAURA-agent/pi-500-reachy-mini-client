@@ -94,6 +94,14 @@ wake_words:
     active_in_states: ["sleep"]
     scene_manager_override: false
 
+  - phrase: "tookmycrazypills.pmdl"
+    context_injection: |
+      The user activated Bluetooth audio mode. You'll now monitor audio from
+      their iPhone and react with synchronized motion.
+    movement_sequence: "enter_bluetooth_mode"
+    active_in_states: ["idle"]
+    scene_manager_override: false
+
 # ============================================================================
 # Movement Sequence Definitions (referenced above)
 # ============================================================================
