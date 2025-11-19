@@ -25,3 +25,7 @@ Thumbs.db
 *.log
 *.tmp
 /tmp/
+
+# Large media files
+assets/sounds/sound_effects/*.mp3
+assets/images/scene_manager/scene_context/
