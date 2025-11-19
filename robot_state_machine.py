@@ -300,3 +300,62 @@ RobotStateMachine.VALID_STATES = {
     RobotStateMachine.BLUETOOTH_READY,
     RobotStateMachine.BLUETOOTH_PLAYING,
 }
+
+# State configuration for wake word detection behavior
+RobotStateMachine.STATE_CONFIGS = {
+    "sleep": {
+        "wake_word_detection": True,
+        "face_tracking": False,
+        "breathing": {"enabled": False}  # Sleep has custom pose
+    },
+    "idle": {
+        "wake_word_detection": True,
+        "face_tracking": True,
+        "breathing": {"enabled": True, "amplitude_scale": 1.0, "frequency_scale": 1.0}
+    },
+    "pout": {
+        "wake_word_detection": True,
+        "face_tracking": False,
+        "breathing": {"enabled": False}  # Pout has custom pose
+    },
+    "bluetooth_ready": {
+        "wake_word_detection": True,
+        "face_tracking": True,
+        "breathing": {"enabled": True, "amplitude_scale": 1.0, "frequency_scale": 1.0}
+    },
+    "bluetooth_playing": {
+        "wake_word_detection": False,
+        "face_tracking": False,
+        "breathing": {"enabled": False}  # Paused during playback
+    },
+    "listening": {
+        "wake_word_detection": False,
+        "face_tracking": True,
+        "breathing": {"enabled": False}  # Paused during listening
+    },
+    "thinking": {
+        "wake_word_detection": False,
+        "face_tracking": True,
+        "breathing": {"enabled": True, "amplitude_scale": 0.8, "frequency_scale": 1.2}  # Subtle breathing
+    },
+    "speaking": {
+        "wake_word_detection": False,
+        "face_tracking": False,
+        "breathing": {"enabled": False}  # Speech motion overrides breathing
+    },
+    "code": {
+        "wake_word_detection": True,
+        "face_tracking": True,
+        "breathing": {"enabled": True, "amplitude_scale": 1.0, "frequency_scale": 1.0}
+    },
+    "execution": {
+        "wake_word_detection": False,
+        "face_tracking": False,
+        "breathing": {"enabled": False}  # Paused during execution
+    },
+    "error": {
+        "wake_word_detection": False,
+        "face_tracking": True,
+        "breathing": {"enabled": True, "amplitude_scale": 0.6, "frequency_scale": 1.5}  # Anxious breathing
+    },
+}

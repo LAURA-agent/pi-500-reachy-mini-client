@@ -254,20 +254,23 @@ class CameraWorker:
         self.previous_head_tracking_state = self.is_head_tracking_enabled
 
         # Move to neutral position on startup
-        if self.daemon_client:
-            try:
-                logger.info("Moving to neutral head position on startup")
-                self.daemon_client.set_target(head=neutral_pose)
-                time.sleep(0.5)  # Give robot time to reach neutral
-            except Exception as e:
-                logger.warning(f"Failed to move to neutral position: {e}")
+        # DISABLED: Causes IK collision errors when robot is in certain positions
+        # if self.daemon_client:
+        #     try:
+        #         logger.info("Moving to neutral head position on startup")
+        #         self.daemon_client.set_target(head=neutral_pose)
+        #         time.sleep(0.5)  # Give robot time to reach neutral
+        #     except Exception as e:
+        #         logger.warning(f"Failed to move to neutral position: {e}")
 
         # Flush stale frames from daemon (clear any frames from previous session)
-        logger.debug("Flushing stale frames from camera...")
+        logger.info("Flushing stale frames from camera...")
         for _ in range(90):  # Flush 3 seconds of frames at 30fps to clear daemon buffer
             self.media_manager.get_frame()
-        logger.debug("Camera frames flushed, starting fresh")
+        logger.info("Camera frames flushed, starting fresh")
+        logger.info(f"Face tracking enabled: {self.is_head_tracking_enabled}")
 
+        frame_count = 0
         while not self._stop_event.is_set():
             try:
                 current_time = time.time()
@@ -279,8 +282,14 @@ class CameraWorker:
 
                 # Get frame from media manager for display
                 frame = self.media_manager.get_frame()
+                frame_count += 1
+
+                if frame is None and frame_count % 100 == 0:
+                    logger.warning(f"[CAMERA] No frame received (count: {frame_count})")
 
                 if frame is not None:
+                    if frame_count == 1 or frame_count % 300 == 0:
+                        logger.info(f"[CAMERA] Frame {frame_count} received, shape: {frame.shape}")
                     # Thread-safe frame storage
                     with self.frame_lock:
                         self.latest_frame = frame
@@ -535,6 +544,7 @@ class CameraWorker:
                     # Debug visualization
                     if self.debug_window and frame is not None:
                         try:
+                            logger.info("[DEBUG WINDOW] Creating debug visualization")
                             debug_frame = frame.copy()
                             h, w = debug_frame.shape[:2]
 
@@ -631,9 +641,10 @@ class CameraWorker:
                             # Show debug window
                             cv2.imshow("Face Tracking Debug", debug_frame)
                             cv2.waitKey(1)  # Process window events
+                            logger.info("[DEBUG WINDOW] Window updated successfully")
                         except Exception as e:
                             # Silently disable debug window if display isn't available
-                            logger.debug(f"Debug window disabled: {e}")
+                            logger.warning(f"[DEBUG WINDOW] Failed to show debug window: {e}")
                             self.debug_window = False
 
                 # Small sleep to prevent excessive CPU usage (same as main_works.py)

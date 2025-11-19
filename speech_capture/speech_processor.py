@@ -35,9 +35,18 @@ import asyncio
 import time
 import traceback
 import select
+import platform
 import numpy as np
 from typing import Optional
-from evdev import ecodes
+
+# Optional evdev import (Linux-only)
+try:
+    from evdev import ecodes
+except ImportError:
+    # Mock ecodes for non-Linux platforms
+    class ecodes:
+        KEY_LEFTMETA = 125
+
 from speech_capture.vosk_readiness_checker import vosk_readiness
 from speech_capture.silero_vad_wrapper import SileroVAD
 

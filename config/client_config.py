@@ -288,8 +288,9 @@ def get_vosk_model_path() -> Path:
                 if fallback_path.exists():
                     return fallback_path
                 else:
-                    print(f"[CONFIG FATAL] Default Vosk model '{VOSK_MODEL_SIZE_DEFAULT}' path also does not exist: {fallback_path}.")
-                    raise FileNotFoundError(f"Neither requested Vosk model '{model_size}' nor default '{VOSK_MODEL_SIZE_DEFAULT}' found.")
+                    print(f"[CONFIG WARNING] Default Vosk model '{VOSK_MODEL_SIZE_DEFAULT}' path also does not exist: {fallback_path}.")
+                    print("[CONFIG INFO] Vosk not available - speech features will be disabled. Use Gradio interface for input.")
+                    return None  # Return None instead of raising error
             else:
                 raise ValueError("VOSK_MODEL_SIZE_DEFAULT not found in VOSK_MODEL_PATHS_AVAILABLE. Config error.")
     else:
@@ -301,7 +302,9 @@ def get_vosk_model_path() -> Path:
             if fallback_path.exists():
                 return fallback_path
             else:
-                raise FileNotFoundError(f"Vosk model size '{model_size}' not defined, and default '{VOSK_MODEL_SIZE_DEFAULT}' also not found at {fallback_path}.")
+                print(f"[CONFIG WARNING] Vosk model size '{model_size}' not defined, and default '{VOSK_MODEL_SIZE_DEFAULT}' also not found at {fallback_path}.")
+                print("[CONFIG INFO] Vosk not available - speech features will be disabled. Use Gradio interface for input.")
+                return None  # Return None instead of raising error
         else:
             raise ValueError("VOSK_MODEL_SIZE_DEFAULT not found in VOSK_MODEL_PATHS_AVAILABLE. Config error.")
 

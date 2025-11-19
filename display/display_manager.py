@@ -463,20 +463,17 @@ class DisplayManager:
         """Clean up pygame resources"""
         pygame.quit()
 
-    # Compatibility methods for StateTracker interface
-    def update_state(self, state, mood=None, text=None):
-        """Synchronous wrapper for update_display() - runs async method in event loop"""
-        # Update state immediately (synchronously) to prevent race conditions
+    def update_display_sync(self, state: str, mood: str = None, text: str = None):
+        """Synchronous entry point for updating display from state machine callbacks.
+
+        This method is called by the state machine when state changes occur.
+        It updates the internal tracking variables and triggers async display update.
+        """
+        # Update tracking variables for internal use (image rotation, etc.)
+        self.last_state = self.current_state
         self.current_state = state
         if mood is not None:
             self.current_mood = mood
-        # Then update display asynchronously
+
+        # Trigger async display update
         asyncio.create_task(self.update_display(state, mood, text))
-
-    def get_state(self):
-        """Get current display state"""
-        return self.current_state
-
-    def register_callback(self, callback):
-        """Register state change callback (no-op for now, DisplayManager doesn't use callbacks)"""
-        pass  # DisplayManager doesn't currently support callbacks, but we provide this for compatibility
