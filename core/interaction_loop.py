@@ -61,8 +61,8 @@ class InteractionLoop:
                     self._wake_from_sleep = False
                 self._previous_state = current_state
 
-                from robot_state_machine import RobotStateMachine
-                state_config = RobotStateMachine.STATE_CONFIGS.get(current_state, {})
+                from state_tracker import StateTracker
+                state_config = StateTracker.STATE_CONFIGS.get(current_state, {})
                 if state_config.get("wake_word_detection", False):
                     wake_event_source = await self.input_manager.check_for_wake_events()
                     if not wake_event_source:

@@ -20,7 +20,6 @@ from core.interaction_loop import InteractionLoop
 from core.lifecycle_manager import LifecycleManager
 from system.audio_manager import AudioManager
 from display.display_manager import DisplayManager
-from robot_state_machine import RobotStateMachine
 from system.input_manager import InputManager
 from system.notification_manager import NotificationManager
 from system.conversation_manager import ConversationManager
@@ -35,27 +34,21 @@ init()
 
 class AppOrchestrator:
     def __init__(self):
-        # Initialize state machine and display separately
-        self.state_machine = RobotStateMachine()
-        self.display_manager = DisplayManager()
-
-        # Connect state machine to display manager via callback
-        self.state_machine.register_callback(self._on_state_change_for_display)
-
+        self.state_tracker = DisplayManager()
         self.audio_manager = AudioManager()
         self.tts_handler = TTSHandler()
-        self.input_manager = InputManager(self.audio_manager)
-        self.robot_controller = RobotController(self.state_machine, self.input_manager)
+        self.input_manager = InputManager(self.audio_manager, self.audio_manager.wakeword_queue)
+        self.robot_controller = RobotController(self.state_tracker, self.input_manager)
         self.transcriber = VoskTranscriber()
         self.speech_processor = SpeechProcessor(
-            self.audio_manager, self.transcriber, None
+            self.audio_manager, self.transcriber, None, self.audio_manager.vad_queue
         )
         self.conversation_manager = ConversationManager(
             self.speech_processor, self.robot_controller.audio_coordinator, self.tts_handler,
             client_settings, self.robot_controller.movement_manager
         )
         self.mcp_session_manager = MCPSessionManager()
-        self.api_server = APIServer(self.robot_controller, self.state_machine, self.audio_manager, self.input_manager)
+        self.api_server = APIServer(self.robot_controller, self.state_tracker, self.audio_manager, self.input_manager)
         self.notification_manager = NotificationManager(
             self.robot_controller.audio_coordinator, self.tts_handler
         )
@@ -65,22 +58,18 @@ class AppOrchestrator:
         self.system_command_manager._notification_manager = self.notification_manager
 
         self.interaction_loop = InteractionLoop(
-            state_tracker=self.state_machine, input_manager=self.input_manager,
+            state_tracker=self.state_tracker, input_manager=self.input_manager,
             robot_controller=self.robot_controller, mcp_session_manager=self.mcp_session_manager,
             speech_processor=self.speech_processor, conversation_manager=self.conversation_manager,
             system_command_manager=self.system_command_manager
         )
         self.lifecycle_manager = LifecycleManager(
             robot_controller=self.robot_controller, api_server=self.api_server,
-            audio_manager=self.audio_manager, state_tracker=self.state_machine,
+            audio_manager=self.audio_manager, state_tracker=self.state_tracker,
             input_manager=self.input_manager
         )
         self.input_manager.initialize_keyboard()
         self.speech_processor.keyboard_device = self.input_manager.keyboard_device
-
-    def _on_state_change_for_display(self, new_state: str, old_state: str, mood: str = None, text: str = None):
-        """Callback to update display when state machine changes state."""
-        self.display_manager.update_display_sync(new_state, mood, text)
 
     async def run(self):
         await self.lifecycle_manager.startup()
@@ -92,7 +81,7 @@ class AppOrchestrator:
             try:
                 if code_mode_active:
                     print(f"{Fore.YELLOW}[WARNING] Running in OFFLINE CODE MODE - server connection bypassed{Style.RESET_ALL}")
-                    self.state_machine.update_state("idle")
+                    self.state_tracker.update_state("idle")
                     self.interaction_loop.set_offline_mode(True)
                     # The loop will run accepting keyboard/voice commands for local injection
                     await self.interaction_loop.run()
@@ -113,8 +102,8 @@ class AppOrchestrator:
                         connection_failures = 0
                         code_mode_active = False
                         self.interaction_loop.set_offline_mode(False)
-
-                        self.state_machine.update_state("idle")
+                        
+                        self.state_tracker.update_state("idle")
                         print(f"{Fore.GREEN}✓ Session initialized successfully{Style.RESET_ALL}")
                         self.interaction_loop.set_session_id(self.mcp_session_manager.session_id)
 
@@ -134,7 +123,7 @@ class AppOrchestrator:
                         #     self.notification_manager.check_for_notifications_loop(
                         #         self.mcp_session_manager.mcp_session,
                         #         self.mcp_session_manager.session_id,
-                        #         self.state_machine
+                        #         self.state_tracker
                         #     )
                         # )
 

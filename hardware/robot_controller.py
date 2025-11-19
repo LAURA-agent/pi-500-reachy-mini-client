@@ -9,7 +9,6 @@ import time
 import traceback
 
 from daemon_client import DaemonClient
-from robot_state_machine import RobotStateMachine
 from moves import MovementManager, PoutPoseMove, AntennaTwitchMove, create_pout_exit_lunge_sequence, create_pout_exit_gentle_sequence
 from camera_worker import CameraWorker
 from head_wobbler import HeadWobbler
@@ -38,7 +37,7 @@ class RobotController:
             head_tracker=self.head_tracker,
             daemon_client=self.daemon_client,
             movement_manager=None,
-            debug_window=True
+            debug_window=False
         )
         self.movement_manager = MovementManager(
             current_robot=self.daemon_client,
@@ -166,6 +165,7 @@ class RobotController:
         print(f"[{response_type.upper()}] Playback complete")
 
     def _on_state_change(self, new_state, old_state, mood, text):
+        from state_tracker import StateTracker
         print(f"[STATE] {old_state} -> {new_state}")
 
         if new_state == "sleep" and not self._is_physically_asleep:
@@ -174,14 +174,10 @@ class RobotController:
             if self._sleep_move:
                 self.exit_sleep_mode()
 
-        config = RobotStateMachine.STATE_CONFIGS.get(new_state, {})
+        config = StateTracker.STATE_CONFIGS.get(new_state, {})
         breathing_config = config.get("breathing", {})
         if new_state not in ["speaking", "sleep", "pout"]:
             if breathing_config.get("enabled", False):
-                self.movement_manager.set_breathing_parameters(
-                    breathing_config.get("amplitude_scale", 1.0),
-                    breathing_config.get("frequency_scale", 1.0)
-                )
                 self.movement_manager.resume_breathing()
             else:
                 self.movement_manager.pause_breathing()

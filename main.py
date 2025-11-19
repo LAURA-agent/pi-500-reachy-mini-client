@@ -25,23 +25,17 @@ from speech_capture.vosk_readiness_checker import ensure_vosk_ready
 
 async def main():
     """Main entry point with multi-task architecture."""
-    import platform
-    IS_MAC = platform.system() == "Darwin"
-
     print("--- STARTING PI REACHY APPLICATION ---", flush=True)
 
     # Clean up old mood files before starting
     cleanup_old_mood_files()
 
-    # Check VOSK readiness (skip on Mac)
-    if IS_MAC:
-        print("[INFO] Running on Mac - VOSK disabled, use Gradio interface for input")
+    # Check VOSK readiness
+    print("[INFO] Checking VOSK server readiness...")
+    if not await ensure_vosk_ready(timeout=10):
+        print("[WARNING] VOSK server not ready - speech features will be limited")
     else:
-        print("[INFO] Checking VOSK server readiness...")
-        if not await ensure_vosk_ready(timeout=10):
-            print("[WARNING] VOSK server not ready - speech features will be limited")
-        else:
-            print("[INFO] VOSK server is ready")
+        print("[INFO] VOSK server is ready")
 
     print("[INFO] Initializing Application Orchestrator...")
     orchestrator = AppOrchestrator()

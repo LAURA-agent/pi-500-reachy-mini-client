@@ -4,34 +4,11 @@ import asyncio
 import time
 import random
 import select
-import platform
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from evdev import InputDevice, list_devices, ecodes
 from colorama import Fore
-
-# Platform detection
-IS_MAC = platform.system() == "Darwin"
-IS_LINUX = platform.system() == "Linux"
-
-# Optional evdev import (Linux-only)
-try:
-    if IS_LINUX:
-        from evdev import InputDevice, list_devices, ecodes
-    else:
-        # Mock evdev for non-Linux platforms
-        InputDevice = None
-        list_devices = lambda: []
-        class ecodes:
-            EV_KEY = 1
-            KEY_LEFTMETA = 125
-except ImportError:
-    print("[INPUT] evdev not available - keyboard detection disabled (use Gradio interface)")
-    InputDevice = None
-    list_devices = lambda: []
-    class ecodes:
-        EV_KEY = 1
-        KEY_LEFTMETA = 125
 
 # Wake word sensitivity settings (0.0-1.0, higher = more sensitive but more false positives)
 WAKE_WORDS = {
@@ -128,10 +105,6 @@ class InputManager:
 
     def initialize_keyboard(self):
         """Initialize keyboard input detection"""
-        if IS_MAC:
-            print(f"{Fore.YELLOW}[INPUT] Keyboard detection disabled on Mac - use Gradio interface{Fore.WHITE}")
-            self.keyboard_device = None
-            return True  # Return True to allow initialization to continue
         self.keyboard_device = self.find_pi_keyboard()
         return self.keyboard_device is not None
 
@@ -168,18 +141,8 @@ class InputManager:
 
     async def wake_word_detection(self):
         """Wake word detection with notification-aware breaks and cancellation support"""
-        # Skip wake word detection on Mac (use Gradio interface instead)
-        if IS_MAC:
-            await asyncio.sleep(0.1)  # Prevent CPU spinning
-            return None
-
-        try:
-            import pyaudio
-            import snowboydetect
-        except ImportError:
-            await asyncio.sleep(0.1)  # Prevent CPU spinning
-            return None
-
+        import pyaudio
+        import snowboydetect
         from config.client_config import WAKE_WORDS_AND_SENSITIVITIES as WAKE_WORDS, WAKEWORD_RESOURCE_FILE, BASE_PATH
 
         # One-time initialization

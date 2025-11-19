@@ -23,13 +23,8 @@ class LifecycleManager:
         self._api_server_runner = await self.api_server.start()
         print("[INFO] API Server started.")
 
-        # Audio initialization is optional (skip on Mac for Gradio-only mode)
-        if hasattr(self.audio_manager, 'initialize_input'):
-            try:
-                await self.audio_manager.initialize_input()
-                print("[INFO] Audio stream initialized.")
-            except Exception as e:
-                print(f"[WARNING] Audio initialization failed (OK for Gradio mode): {e}")
+        await self.audio_manager.start_input_stream()
+        print("[INFO] Audio stream started.")
 
         self.robot_controller.start_threads()
         print("[INFO] Robot control threads started.")
