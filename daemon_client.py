@@ -28,13 +28,14 @@ class DaemonClient:
             daemon_url: Base URL of daemon API (default: http://localhost:8100)
         """
         self.daemon_url = daemon_url.rstrip("/")
+        self.session = requests.Session()  # Persistent connection for performance
         self._body_yaw_warning_logged = False  # Only log warning once
         self._check_connection()
 
     def _check_connection(self) -> None:
         """Verify daemon is accessible."""
         try:
-            response = requests.get(f"{self.daemon_url}/api/daemon/status", timeout=2)
+            response = self.session.get(f"{self.daemon_url}/api/daemon/status", timeout=2)
             response.raise_for_status()
             logger.info(f"Connected to daemon at {self.daemon_url}")
         except requests.RequestException as e:
@@ -78,7 +79,7 @@ class DaemonClient:
             payload["target_body_yaw"] = float(body_yaw)
 
         try:
-            response = requests.post(
+            response = self.session.post(
                 f"{self.daemon_url}/api/move/set_target",
                 json=payload,
                 timeout=0.1,  # Fast timeout for 100Hz loop
@@ -105,7 +106,7 @@ class DaemonClient:
         """
         try:
             # Get body yaw
-            body_yaw_response = requests.get(
+            body_yaw_response = self.session.get(
                 f"{self.daemon_url}/api/state/present_body_yaw",
                 timeout=0.5,
             )
@@ -113,7 +114,7 @@ class DaemonClient:
             body_yaw = float(body_yaw_response.text)  # Returns single float
 
             # Get antenna positions
-            antenna_response = requests.get(
+            antenna_response = self.session.get(
                 f"{self.daemon_url}/api/state/present_antenna_joint_positions",
                 timeout=0.5,
             )
@@ -137,7 +138,7 @@ class DaemonClient:
             4x4 transformation matrix (meters)
         """
         try:
-            response = requests.get(
+            response = self.session.get(
                 f"{self.daemon_url}/api/state/present_head_pose",
                 params={"use_pose_matrix": False},  # Get XYZRPYPose format
                 timeout=0.5,
@@ -164,7 +165,7 @@ class DaemonClient:
             Status dictionary from daemon
         """
         try:
-            response = requests.get(f"{self.daemon_url}/api/daemon/status", timeout=2)
+            response = self.session.get(f"{self.daemon_url}/api/daemon/status", timeout=2)
             response.raise_for_status()
             return response.json()
         except requests.RequestException as e:
@@ -182,7 +183,7 @@ class DaemonClient:
             4x4 transformation matrix for target head pose
         """
         try:
-            response = requests.get(
+            response = self.session.get(
                 f"{self.daemon_url}/api/kinematics/look_at_image",
                 params={"u": u, "v": v, "use_pose_matrix": False},
                 timeout=0.05,  # 50ms timeout for real-time tracking
