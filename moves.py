@@ -376,6 +376,8 @@ class MovementManager:
         self._current_breathing_roll = 0.0
         self._breathing_roll_lock = threading.Lock()
         self._breathing_scale = 1.0
+        self._breathing_amplitude_scale = 1.0
+        self._breathing_frequency_scale = 1.0
         self._last_set_target_err = 0.0
         self._set_target_err_interval = 1.0
         self._set_target_err_suppressed = 0
@@ -471,6 +473,11 @@ class MovementManager:
 
     def resume_breathing(self) -> None:
         self.scale_breathing_up()
+
+    def set_breathing_parameters(self, amplitude_scale: float = 1.0, frequency_scale: float = 1.0) -> None:
+        """Set breathing parameters for current state."""
+        self._breathing_amplitude_scale = amplitude_scale
+        self._breathing_frequency_scale = frequency_scale
 
     def _calculate_current_strain(self) -> None:
         if hasattr(self, '_last_commanded_pose'):

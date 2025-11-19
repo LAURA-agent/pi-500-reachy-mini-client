@@ -178,6 +178,10 @@ class RobotController:
         breathing_config = config.get("breathing", {})
         if new_state not in ["speaking", "sleep", "pout"]:
             if breathing_config.get("enabled", False):
+                self.movement_manager.set_breathing_parameters(
+                    breathing_config.get("amplitude_scale", 1.0),
+                    breathing_config.get("frequency_scale", 1.0)
+                )
                 self.movement_manager.resume_breathing()
             else:
                 self.movement_manager.pause_breathing()
