@@ -404,6 +404,9 @@ class MovementManager:
         self._face_offsets_lock = threading.Lock()
         self._pending_face_offsets: Tuple[float, float, float, float, float, float] = (0.0,) * 6
         self._face_offsets_dirty = False
+        # Low-pass filter for face tracking to prevent 100Hz jitter with breathing
+        self._smoothed_face_offsets: List[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        self._face_tracking_smoothing = 0.92  # 0.92 = smooth, 0.0 = instant (no filter)
         self._shared_state_lock = threading.Lock()
         self._shared_last_activity_time = self.state.last_activity_time
         self._shared_is_listening = self._is_listening
@@ -787,11 +790,23 @@ class MovementManager:
         with self._external_control_lock:
             external_control = self._external_control_active
         is_suppressed = self._suppress_face_tracking or external_control or not isinstance(self.state.current_move, BreathingMove)
-        
+
         if is_suppressed or self.camera_worker is None:
-            self.state.face_tracking_offsets = (0.0,) * 6
+            raw_offsets = (0.0,) * 6
         else:
-            self.state.face_tracking_offsets = self.camera_worker.get_face_tracking_offsets()
+            raw_offsets = self.camera_worker.get_face_tracking_offsets()
+
+        # Apply low-pass filter to prevent 100Hz jitter fighting with breathing
+        # EMA: smoothed = α * smoothed_prev + (1 - α) * raw
+        # Higher α (0.9-0.95) = more smoothing, slower response
+        alpha = self._face_tracking_smoothing
+        for i in range(6):
+            self._smoothed_face_offsets[i] = (
+                alpha * self._smoothed_face_offsets[i] +
+                (1.0 - alpha) * raw_offsets[i]
+            )
+
+        self.state.face_tracking_offsets = tuple(self._smoothed_face_offsets)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive(): return
