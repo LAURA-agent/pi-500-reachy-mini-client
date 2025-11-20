@@ -258,16 +258,15 @@ class BreathingMove(Move):  # type: ignore
             #     x_sway = 0.0
             #     y_sway = 0.0
 
-            # Create breathing pose with body-relative sway (only when anchored)
-            neutral_xyz = self.neutral_head_pose[:3, 3]
+            # Create a relative offset pose containing only the breathing motion
             head_pose = create_head_pose(
-                x=neutral_xyz[0] + x_sway,  # X component from rotated sway
-                y=neutral_xyz[1] + y_sway,  # Y component from rotated sway
-                z=neutral_xyz[2],      # Keep neutral Z (0.01m)
-                roll=np.rad2deg(roll_tilt),  # Convert roll from radians to degrees
-                pitch=0.0,             # Maintain neutral pitch (face tracking adds to this)
-                yaw=0.0,               # Neutral yaw (face tracking adds to this)
-                degrees=True,   # All angles in degrees
+                x=x_sway,              # X component from rotated sway
+                y=y_sway,              # Y component from rotated sway
+                z=0.0,                 # No vertical breathing motion
+                roll=np.rad2deg(roll_tilt),
+                pitch=0.0,             # Breathing does not affect pitch
+                yaw=0.0,               # Breathing does not affect yaw
+                degrees=True,
                 mm=False
             )
 
@@ -285,7 +284,8 @@ def combine_full_body(primary_pose: FullBodyPose, secondary_pose: FullBodyPose) 
     primary_head, primary_antennas, primary_body_yaw = primary_pose
     secondary_head, secondary_antennas, secondary_body_yaw = secondary_pose
 
-    combined_head = compose_world_offset(primary_head, secondary_head, reorthonormalize=True)
+    # The secondary pose (face tracking) is the base, and the primary pose (breathing) is the offset.
+    combined_head = compose_world_offset(secondary_head, primary_head, reorthonormalize=True)
 
     combined_antennas = (
         primary_antennas[0] + secondary_antennas[0],

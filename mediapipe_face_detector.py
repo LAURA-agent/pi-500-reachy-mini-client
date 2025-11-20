@@ -64,10 +64,6 @@ class HeadTracker:
         center_x = bboxC.xmin + bboxC.width / 2
         center_y = bboxC.ymin + bboxC.height / 2
 
-        # Convert to [-1, 1] range like YOLO
-        norm_x = center_x * 2.0 - 1.0
-        norm_y = center_y * 2.0 - 1.0
-
-        face_center = np.array([norm_x, norm_y], dtype=np.float32)
+        face_center = np.array([center_x, center_y], dtype=np.float32)
 
         return face_center, None  # No roll angle from FaceDetector

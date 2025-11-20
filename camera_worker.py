@@ -9,7 +9,8 @@ Ported from main_works.py camera_worker() function to provide:
 import time
 import logging
 import threading
-from typing import Any, List, Tuple
+from typing import Any, List, Tuple, Optional
+from multiprocessing import Queue
 
 import cv2
 import numpy as np
@@ -45,7 +46,7 @@ def ease_in_out(t: float) -> float:
 class CameraWorker:
     """Thread-safe camera worker with frame buffering and face tracking."""
 
-    def __init__(self, media_manager: Any, head_tracker: Any = None, daemon_client: Any = None, movement_manager: Any = None, debug_window: bool = False) -> None:
+    def __init__(self, media_manager: Any, head_tracker: Any = None, daemon_client: Any = None, movement_manager: Any = None, debug_window: bool = False, debug_frame_queue: Optional[Queue] = None) -> None:
         """Initialize.
 
         Args:
@@ -54,12 +55,14 @@ class CameraWorker:
             daemon_client: DaemonClient instance for IK calculations
             movement_manager: MovementManager instance for breathing synchronization
             debug_window: Show debug visualization window with face detection overlays
+            debug_frame_queue: Multiprocessing queue to send frames to debug window process
         """
         self.media_manager = media_manager
         self.head_tracker = head_tracker
         self.daemon_client = daemon_client
         self.movement_manager = movement_manager
         self.debug_window = debug_window
+        self.debug_frame_queue = debug_frame_queue
 
         # Thread-safe frame storage
         self.latest_frame: NDArray[np.uint8] | None = None
@@ -98,7 +101,6 @@ class CameraWorker:
         # Pitch interpolation synchronized with detection frequency (1s)
         self._current_interpolated_pitch = np.deg2rad(0.0)  # Start at neutral (0°)
         self._pitch_interpolation_target: float | None = None  # Target pitch to interpolate toward
-        self._pitch_offset = np.deg2rad(5.0)  # Offset to apply to IK pitch (positive = look more down)
         self._pitch_interpolation_start: float | None = None   # Starting pitch of current interpolation
         self._pitch_interpolation_start_time: float | None = None  # When interpolation started
         self._pitch_interpolation_duration = 0.3  # 300ms smooth transition (longer to prevent oscillation)
@@ -232,9 +234,12 @@ class CameraWorker:
         if self._thread is not None:
             self._thread.join()
 
-        # Close debug window if it was open
-        if self.debug_window:
-            cv2.destroyAllWindows()
+        # Signal debug window process to stop
+        if self.debug_window and self.debug_frame_queue is not None:
+            try:
+                self.debug_frame_queue.put(None)  # Shutdown signal
+            except:
+                pass
 
         logger.debug("Camera worker stopped")
 
@@ -387,11 +392,13 @@ class CameraWorker:
 
                         # Convert normalized coordinates to pixel coordinates
                         h, w, _ = detection_frame.shape
-                        eye_center_norm = (eye_center + 1) / 2
+                        # The `eye_center` value is now the correct normalized coordinate in the [0,1] range.
+                        eye_center_norm = eye_center
                         eye_center_pixels = [
                             eye_center_norm[0] * w,
                             eye_center_norm[1] * h,
                         ]
+                        logger.info(f"[MEDIAPIPE COORDS] eye_center: {eye_center}, frame: {w}x{h}, pixels: {eye_center_pixels}")
 
                         # Get the head pose needed to look at the target via daemon IK
                         if self.daemon_client is None:
@@ -410,16 +417,14 @@ class CameraWorker:
                         translation = target_pose[:3, 3]
                         rotation = R.from_matrix(target_pose[:3, :3]).as_euler("xyz", degrees=False)
 
-                        # Pitch: Use daemon result directly (positive=down, negative=up)
-                        # Clamp to safe range: -25° (max up) to +5° (max down)
-                        pitch = rotation[1] + self._pitch_offset
+                        # 1. Interpret Pitch: Invert daemon's "positive = down" to robot's "positive = up"
+                        pitch = -rotation[1]
+
+                        # The previous upper limit of +5.0 was too restrictive. A symmetrical range is a better default.
                         pitch = np.clip(pitch, np.deg2rad(-25.0), np.deg2rad(5.0))
 
-                        # Yaw: Use raw IK result directly
-                        # Body-follow rotation compensation handles alignment (moves.py:647-660)
+                        # 3. Interpret Yaw: Use raw daemon value.
                         yaw = rotation[2]
-
-                        # Don't use world-frame target storage
                         with self._world_frame_target_lock:
                             self._world_frame_target_yaw = None
 
@@ -445,12 +450,9 @@ class CameraWorker:
 
                         min_change_threshold = 1.0  # degrees - ignore changes smaller than this
 
-                        # Start pitch interpolation only if change is significant
-                        if pitch_change_deg > min_change_threshold:
-                            self._pitch_interpolation_target = pitch
-                            self._pitch_interpolation_start = self._current_interpolated_pitch
-                            self._pitch_interpolation_start_time = current_time
-
+                        # Update the pitch directly, bypassing the interpolation which causes oscillation.
+                        self._current_interpolated_pitch = pitch
+                        
                         # Start yaw interpolation only if change is significant
                         if yaw_change_deg > min_change_threshold:
                             self._yaw_interpolation_target = yaw
@@ -537,15 +539,16 @@ class CameraWorker:
                     # Debug visualization
                     if self.debug_window and frame is not None:
                         try:
+                            # Use frame at original size (daemon already sends 1280x720)
                             debug_frame = frame.copy()
                             h, w = debug_frame.shape[:2]
 
-                            # Draw center crosshair (image center reference)
+                            # Draw center crosshair (image center reference) - larger for visibility
                             center_x, center_y = w // 2, h // 2
-                            cv2.line(debug_frame, (center_x - 20, center_y), (center_x + 20, center_y), (0, 255, 0), 1)
-                            cv2.line(debug_frame, (center_x, center_y - 20), (center_x, center_y + 20), (0, 255, 0), 1)
-                            cv2.putText(debug_frame, "CENTER", (center_x + 10, center_y - 10),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                            cv2.line(debug_frame, (center_x - 40, center_y), (center_x + 40, center_y), (0, 255, 0), 2)
+                            cv2.line(debug_frame, (center_x, center_y - 40), (center_x, center_y + 40), (0, 255, 0), 2)
+                            cv2.putText(debug_frame, "CENTER", (center_x + 20, center_y - 20),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
                             # Determine face detection state and recovery action
                             face_detected_now = (eye_center is not None)
@@ -575,21 +578,22 @@ class CameraWorker:
 
                             # Draw face center if detected
                             if self._last_face_center is not None and face_detected_now:
-                                fx, fy = self._last_face_center
-                                # Draw face center point
-                                cv2.circle(debug_frame, (fx, fy), 10, (255, 0, 0), 2)
-                                cv2.circle(debug_frame, (fx, fy), 3, (255, 0, 0), -1)
+                                # Use face position directly (no scaling needed)
+                                fx, fy = int(self._last_face_center[0]), int(self._last_face_center[1])
+                                # Draw face center point - larger for visibility
+                                cv2.circle(debug_frame, (fx, fy), 20, (255, 0, 0), 3)
+                                cv2.circle(debug_frame, (fx, fy), 6, (255, 0, 0), -1)
 
-                                # Draw line from center to face
-                                cv2.line(debug_frame, (center_x, center_y), (fx, fy), (255, 255, 0), 2)
+                                # Draw line from center to face - thicker
+                                cv2.line(debug_frame, (center_x, center_y), (fx, fy), (255, 255, 0), 3)
 
-                                # Display world yaw, body yaw, and relative yaw
+                                # Display world yaw, body yaw, and relative yaw - larger text
                                 cv2.putText(debug_frame, f"World yaw: {self._last_world_yaw_deg:+.1f} deg",
-                                            (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                                            (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
                                 cv2.putText(debug_frame, f"Body yaw: {self._last_body_yaw_deg:+.1f} deg",
-                                            (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 128, 0), 2)
+                                            (30, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 128, 0), 2)
                                 cv2.putText(debug_frame, f"Relative yaw: {self._last_yaw_deg:+.1f} deg",
-                                            (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+                                            (30, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 255), 2)
 
                                 # Direction based on relative yaw
                                 if self._last_yaw_deg > 2:
@@ -602,37 +606,41 @@ class CameraWorker:
                                     direction = "CENTERED"
                                     color = (0, 255, 0)  # Green
 
-                                cv2.putText(debug_frame, direction, (20, 140),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 3)
+                                cv2.putText(debug_frame, direction, (30, 200),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 4)
 
                                 # Show face position offset from center
                                 offset_x = fx - center_x
                                 offset_y = fy - center_y
                                 cv2.putText(debug_frame, f"Face offset: ({offset_x:+d}, {offset_y:+d}) px",
-                                            (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 1)
+                                            (30, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
 
                             # Face detection status (always show)
                             face_status = f"Face: {'DETECTED' if face_detected_now else 'LOST'}"
                             face_color = (0, 255, 0) if face_detected_now else (0, 0, 255)
-                            cv2.putText(debug_frame, face_status, (20, 220),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, face_color, 2)
+                            cv2.putText(debug_frame, face_status, (30, 310),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, face_color, 3)
 
                             # Recovery state (always show)
                             state_text = f"State: {recovery_state}"
                             if time_info:
                                 state_text += f" ({time_info})"
-                            cv2.putText(debug_frame, state_text, (20, 250),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, recovery_color, 2)
+                            cv2.putText(debug_frame, state_text, (30, 360),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, recovery_color, 3)
 
                             # Display tracking status
                             status = "TRACKING ON" if self.is_head_tracking_enabled else "TRACKING OFF"
                             status_color = (0, 255, 0) if self.is_head_tracking_enabled else (0, 0, 255)
-                            cv2.putText(debug_frame, status, (w - 200, 40),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+                            cv2.putText(debug_frame, status, (w - 350, 60),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 3)
 
-                            # Show debug window
-                            cv2.imshow("Face Tracking Debug", debug_frame)
-                            cv2.waitKey(1)  # Process window events
+                            # Send frame to debug window process via queue
+                            if self.debug_frame_queue is not None:
+                                try:
+                                    # Non-blocking put - drop frame if queue is full
+                                    self.debug_frame_queue.put_nowait(debug_frame)
+                                except:
+                                    pass  # Queue full, skip this frame
                         except Exception as e:
                             # Silently disable debug window if display isn't available
                             logger.debug(f"Debug window disabled: {e}")

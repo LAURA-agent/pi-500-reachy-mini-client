@@ -7,6 +7,8 @@ including standard poses, speech motion, and Bluetooth audio synchronization.
 import asyncio
 import time
 import traceback
+import platform
+from multiprocessing import Process, Queue
 
 from daemon_client import DaemonClient
 from moves import MovementManager, PoutPoseMove, AntennaTwitchMove, create_pout_exit_lunge_sequence, create_pout_exit_gentle_sequence
@@ -32,12 +34,23 @@ class RobotController:
         self.state_tracker = state_tracker
         self.input_manager = input_manager
 
+        # Debug window process (macOS requires separate process for cv2.imshow)
+        self.debug_frame_queue = None
+        self.debug_window_process = None
+        if platform.system() == "Darwin":
+            from debug_window_process import run_debug_window
+            self.debug_frame_queue = Queue(maxsize=2)  # Small queue, drop frames if full
+            self.debug_window_process = Process(target=run_debug_window, args=(self.debug_frame_queue,))
+            self.debug_window_process.start()
+            print("[INFO] Debug window process started (macOS)")
+
         self.camera_worker = CameraWorker(
             media_manager=self.media_manager,
             head_tracker=self.head_tracker,
             daemon_client=self.daemon_client,
             movement_manager=None,
-            debug_window=True  # Enable debug visualization window
+            debug_window=True,  # Enable debug visualization
+            debug_frame_queue=self.debug_frame_queue  # Pass queue to worker
         )
         self.movement_manager = MovementManager(
             current_robot=self.daemon_client,
@@ -86,6 +99,15 @@ class RobotController:
     def stop_threads(self):
         self.movement_manager.stop()
         self.camera_worker.stop()
+
+        # Cleanup debug window process
+        if self.debug_window_process is not None:
+            print("[INFO] Terminating debug window process...")
+            self.debug_window_process.terminate()
+            self.debug_window_process.join(timeout=2)
+            if self.debug_window_process.is_alive():
+                self.debug_window_process.kill()
+            print("[INFO] Debug window process terminated")
 
     def _preload_response_audio(self):
         """Pre-analyze all pre-recorded response audio files at startup"""
