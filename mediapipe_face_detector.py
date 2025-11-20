@@ -45,7 +45,8 @@ class HeadTracker:
             img: Input image in BGR format.
 
         Returns:
-            Tuple of (face_center [-1,1], None) or (None, None) if no face detected.
+            Tuple of (face_center [0,1], None) or (None, None) if no face detected.
+            Note: Returns normalized coordinates in [0,1] range (NOT [-1,+1]).
         """
         h, w, _ = img.shape
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)

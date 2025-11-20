@@ -392,15 +392,14 @@ class CameraWorker:
 
                         # Convert normalized coordinates to pixel coordinates
                         h, w, _ = detection_frame.shape
-                        # TEMPORARY: Using conversation app's coordinate transform (eye_center + 1) / 2
-                        # This is mathematically wrong but system is calibrated to it
-                        # MediaPipe returns [0,1] but this converts to [0.5,1.0]
-                        eye_center_norm = (eye_center + 1) / 2
+                        # MediaPipe FaceDetector returns [0,1] normalized coordinates directly
+                        # (NOT [-1,+1] despite what the docstring incorrectly says)
+                        eye_center_norm = eye_center  # Already in [0,1] range
                         eye_center_pixels = [
                             eye_center_norm[0] * w,
                             eye_center_norm[1] * h,
                         ]
-                        logger.info(f"[MEDIAPIPE COORDS] eye_center: {eye_center}, normalized: {eye_center_norm}, frame: {w}x{h}, pixels: {eye_center_pixels}")
+                        logger.info(f"[MEDIAPIPE COORDS] Raw eye_center: {eye_center}, pixels: ({eye_center_pixels[0]:.1f}, {eye_center_pixels[1]:.1f}), frame: {w}x{h}")
 
                         # Get the head pose needed to look at the target via daemon IK
                         if self.daemon_client is None:
