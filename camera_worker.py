@@ -99,11 +99,11 @@ class CameraWorker:
         self.previous_head_tracking_state = self.is_head_tracking_enabled
 
         # Pitch interpolation synchronized with detection frequency (1s)
-        self._current_interpolated_pitch = np.deg2rad(0.0)  # Start at neutral (0°)
+        self._current_interpolated_pitch = np.deg2rad(-10.0)  # Start at neutral (-10° = looking up slightly)
         self._pitch_interpolation_target: float | None = None  # Target pitch to interpolate toward
         self._pitch_interpolation_start: float | None = None   # Starting pitch of current interpolation
         self._pitch_interpolation_start_time: float | None = None  # When interpolation started
-        self._pitch_interpolation_duration = 0.3  # 300ms smooth transition (longer to prevent oscillation)
+        self._pitch_interpolation_duration = 2.0  # 2s smooth transition (matches conversation app)
 
         # Yaw interpolation synchronized with detection frequency
         self._current_interpolated_yaw = 0.0  # Start at neutral (0°)
@@ -170,7 +170,7 @@ class CameraWorker:
         self.is_head_tracking_enabled = enabled
         if not enabled:
             # Reset pitch interpolation state when disabling
-            self._current_interpolated_pitch = np.deg2rad(0.0)  # Back to neutral
+            self._current_interpolated_pitch = np.deg2rad(-10.0)  # Back to neutral (-10°)
             self._pitch_interpolation_target = None
             self._pitch_interpolation_start = None
             self._pitch_interpolation_start_time = None
@@ -251,10 +251,10 @@ class CameraWorker:
         logger.debug("Starting camera working loop")
 
         # Initialize head tracker if available
-        # Neutral pose: 0° pitch (looking straight) + 1.0cm z-lift
+        # Neutral pose: -10° pitch (looking up slightly) + 1.0cm z-lift
         neutral_pose = np.eye(4, dtype=np.float32)
         neutral_pose[2, 3] = 0.01  # Raise head by 1.0cm to avoid low position problems
-        neutral_rotation = R.from_euler("xyz", [0, np.deg2rad(0.0), 0])  # 0° pitch (looking straight)
+        neutral_rotation = R.from_euler("xyz", [0, np.deg2rad(-10.0), 0])  # -10° pitch (looking up slightly)
         neutral_pose[:3, :3] = neutral_rotation.as_matrix()
         self.previous_head_tracking_state = self.is_head_tracking_enabled
 
@@ -297,7 +297,7 @@ class CameraWorker:
                     self.interpolation_start_time = None  # Will be set by the face-lost interpolation
                     self.interpolation_start_pose = None
                     # Reset pitch interpolation to neutral
-                    self._current_interpolated_pitch = np.deg2rad(0.0)
+                    self._current_interpolated_pitch = np.deg2rad(-10.0)
                     self._pitch_interpolation_target = None
                     self._pitch_interpolation_start = None
                     self._pitch_interpolation_start_time = None
@@ -392,13 +392,15 @@ class CameraWorker:
 
                         # Convert normalized coordinates to pixel coordinates
                         h, w, _ = detection_frame.shape
-                        # The `eye_center` value is now the correct normalized coordinate in the [0,1] range.
-                        eye_center_norm = eye_center
+                        # TEMPORARY: Using conversation app's coordinate transform (eye_center + 1) / 2
+                        # This is mathematically wrong but system is calibrated to it
+                        # MediaPipe returns [0,1] but this converts to [0.5,1.0]
+                        eye_center_norm = (eye_center + 1) / 2
                         eye_center_pixels = [
                             eye_center_norm[0] * w,
                             eye_center_norm[1] * h,
                         ]
-                        logger.info(f"[MEDIAPIPE COORDS] eye_center: {eye_center}, frame: {w}x{h}, pixels: {eye_center_pixels}")
+                        logger.info(f"[MEDIAPIPE COORDS] eye_center: {eye_center}, normalized: {eye_center_norm}, frame: {w}x{h}, pixels: {eye_center_pixels}")
 
                         # Get the head pose needed to look at the target via daemon IK
                         if self.daemon_client is None:
@@ -450,9 +452,12 @@ class CameraWorker:
 
                         min_change_threshold = 1.0  # degrees - ignore changes smaller than this
 
-                        # Update the pitch directly, bypassing the interpolation which causes oscillation.
-                        self._current_interpolated_pitch = pitch
-                        
+                        # Start pitch interpolation only if change is significant
+                        if pitch_change_deg > min_change_threshold:
+                            self._pitch_interpolation_target = pitch
+                            self._pitch_interpolation_start = self._current_interpolated_pitch
+                            self._pitch_interpolation_start_time = current_time
+
                         # Start yaw interpolation only if change is significant
                         if yaw_change_deg > min_change_threshold:
                             self._yaw_interpolation_target = yaw
@@ -525,7 +530,7 @@ class CameraWorker:
                                 self.interpolation_start_time = None
                                 self.interpolation_start_pose = None
                                 # Reset all tracking state to neutral
-                                self._current_interpolated_pitch = np.deg2rad(0.0)
+                                self._current_interpolated_pitch = np.deg2rad(-10.0)
                                 self._current_interpolated_yaw = np.deg2rad(0.0)
                                 self._last_roll = 0.0  # Reset roll to prevent residual offset
                                 self._pitch_interpolation_target = None
