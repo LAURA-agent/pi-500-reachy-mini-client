@@ -410,8 +410,10 @@ class CameraWorker:
                         translation = target_pose[:3, 3]
                         rotation = R.from_matrix(target_pose[:3, :3]).as_euler("xyz", degrees=False)
 
-                        # Pitch: Invert daemon coordinate system (daemon positive=down, robot positive=up)
-                        pitch = -rotation[1] + self._pitch_offset
+                        # Pitch: Use daemon result directly (positive=down, negative=up)
+                        # Clamp to safe range: -25° (max up) to +5° (max down)
+                        pitch = rotation[1] + self._pitch_offset
+                        pitch = np.clip(pitch, np.deg2rad(-25.0), np.deg2rad(5.0))
 
                         # Yaw: Use raw IK result directly
                         # Body-follow rotation compensation handles alignment (moves.py:647-660)
