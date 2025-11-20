@@ -359,8 +359,10 @@ class CameraWorker:
                                 self._current_interpolated_yaw,
                             ]
 
-                    # Time-based sampling: every 0.1 seconds (10 Hz with MediaPipe)
-                    should_sample = (current_time - self._last_sample_time) >= 0.1
+                    # Time-based sampling: every 1.0 second (prevents oscillation)
+                    # With 2s interpolation duration, this allows movements to mostly complete
+                    # before starting new ones, avoiding constant target changes
+                    should_sample = (current_time - self._last_sample_time) >= 1.0
 
                     if not should_sample:
                         # Not time to sample yet - skip this frame
