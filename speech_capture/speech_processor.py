@@ -37,8 +37,13 @@ import traceback
 import select
 import numpy as np
 from typing import Optional
-from evdev import ecodes
-from speech_capture.vosk_readiness_checker import vosk_readiness
+
+# Optional Linux-only imports
+try:
+    from evdev import ecodes
+except ImportError:
+    ecodes = None
+
 from speech_capture.silero_vad_wrapper import SileroVAD
 
 

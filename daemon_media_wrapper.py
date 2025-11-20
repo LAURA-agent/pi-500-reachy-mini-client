@@ -23,6 +23,7 @@ class DaemonMediaWrapper:
         """
         self.daemon_url = daemon_url.rstrip("/")
         self.frame_endpoint = f"{self.daemon_url}/api/camera/frame"
+        self._error_logged = False  # Only log error once to avoid spam
         logger.info(f"Initialized DaemonMediaWrapper for {self.daemon_url}")
 
     def get_frame(self) -> NDArray[np.uint8] | None:
@@ -40,7 +41,9 @@ class DaemonMediaWrapper:
             frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
             if frame is None:
-                logger.warning("Failed to decode frame from daemon")
+                if not self._error_logged:
+                    logger.warning("Failed to decode frame from daemon")
+                    self._error_logged = True
                 return None
 
             return frame
@@ -49,5 +52,9 @@ class DaemonMediaWrapper:
             # Timeout is acceptable for high-frequency polling
             return None
         except requests.RequestException as e:
-            logger.error(f"Failed to get frame from daemon: {e}")
+            # Only log the error once to avoid spam (e.g., 404 if endpoint doesn't exist)
+            if not self._error_logged:
+                logger.error(f"Failed to get frame from daemon: {e}")
+                logger.info("Camera frame endpoint may not be available - this is normal in passive mode")
+                self._error_logged = True
             return None

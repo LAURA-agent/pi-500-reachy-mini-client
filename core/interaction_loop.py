@@ -9,7 +9,7 @@ import traceback
 import base64
 import cv2
 
-from display.display_manager import DisplayManager
+from state_tracker import StateTracker
 from system.input_manager import InputManager
 from hardware.robot_controller import RobotController
 from communication.mcp_session_manager import MCPSessionManager
@@ -19,7 +19,7 @@ from speech_capture.speech_processor import SpeechProcessor
 from processing.command_handler import CommandHandler
 
 class InteractionLoop:
-    def __init__(self, state_tracker: DisplayManager, input_manager: InputManager,
+    def __init__(self, state_tracker: StateTracker, input_manager: InputManager,
                  robot_controller: RobotController, mcp_session_manager: MCPSessionManager,
                  speech_processor: SpeechProcessor, conversation_manager: ConversationManager,
                  system_command_manager: SystemCommandManager):
@@ -50,9 +50,15 @@ class InteractionLoop:
         self.offline_mode = is_offline
 
     async def run(self):
-        print("[INFO] Main interaction loop started.")
+        """Passive mode interaction loop - no wake word detection.
+
+        In passive mode, all interactions are triggered via API calls from Gradio UI.
+        This loop just keeps the async context alive and monitors state changes.
+        """
+        print("[INFO] Main interaction loop started (passive mode - API driven).")
         while True:
             try:
+                # Track state changes for wake-from-sleep detection
                 current_state = self.state_tracker.get_state()
 
                 if self._previous_state == 'sleep' and current_state != 'sleep':
@@ -61,18 +67,11 @@ class InteractionLoop:
                     self._wake_from_sleep = False
                 self._previous_state = current_state
 
-                from state_tracker import StateTracker
-                state_config = StateTracker.STATE_CONFIGS.get(current_state, {})
-                if state_config.get("wake_word_detection", False):
-                    wake_event_source = await self.input_manager.check_for_wake_events()
-                    if not wake_event_source:
-                        await asyncio.sleep(0.05)
-                        continue
-                    
-                    await self.handle_wake_event(wake_event_source)
-                else:
-                    await asyncio.sleep(0.1)
-                    
+                # Passive mode: just keep event loop alive
+                # State changes happen via API calls (Gradio UI buttons)
+                # Breathing and face tracking applied via state change callbacks
+                await asyncio.sleep(0.1)
+
             except asyncio.CancelledError:
                 print("[INFO] Interaction loop cancelled.")
                 raise  # Re-raise to propagate cancellation upward

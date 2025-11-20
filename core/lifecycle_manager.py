@@ -19,19 +19,22 @@ class LifecycleManager:
     async def startup(self):
         """Initializes and starts all necessary background services."""
         print("[INFO] --- Application Startup Sequence ---")
-        
+
         self._api_server_runner = await self.api_server.start()
         print("[INFO] API Server started.")
 
-        await self.audio_manager.start_input_stream()
-        print("[INFO] Audio stream started.")
+        # Only start audio input stream if method exists (hardware mode)
+        if hasattr(self.audio_manager, 'start_input_stream'):
+            await self.audio_manager.start_input_stream()
+            print("[INFO] Audio stream started.")
 
         self.robot_controller.start_threads()
         print("[INFO] Robot control threads started.")
-        
-        # Start background monitors
-        sleep_monitor = asyncio.create_task(self.sleep_timeout_monitor())
-        self._background_tasks.append(sleep_monitor)
+
+        # Only start sleep monitor if input_manager exists
+        if self.input_manager:
+            sleep_monitor = asyncio.create_task(self.sleep_timeout_monitor())
+            self._background_tasks.append(sleep_monitor)
 
         self.state_tracker.update_state("idle")
         print("[INFO] Application is idle and ready.")

@@ -29,6 +29,16 @@ class APIServer:
         self.app.router.add_post('/speech/motion/start', self.handle_speech_motion_start)
         self.app.router.add_post('/tts/conversation', self.handle_tts_conversation)
         self.app.router.add_post('/tts/working', self.handle_tts_working)
+
+        # Config management endpoints
+        self.app.router.add_get('/config/{config_name}', self.handle_get_config)
+        self.app.router.add_post('/config/{config_name}', self.handle_update_config)
+        self.app.router.add_post('/config/reload/{config_name}', self.handle_reload_config)
+        self.app.router.add_post('/config/reload_all', self.handle_reload_all_configs)
+
+        # State and conversation endpoints
+        self.app.router.add_get('/state/current', self.handle_get_state)
+        self.app.router.add_post('/conversation/start', self.handle_conversation_start)
         
     async def start(self):
         runner = web.AppRunner(self.app)
@@ -169,3 +179,77 @@ class APIServer:
             return web.json_response({"status": "success"})
         except Exception as e:
             return web.json_response({"status": "error", "error": str(e)}, status=500)
+
+    # Config management endpoints
+    async def handle_get_config(self, request):
+        """Get a specific config by name."""
+        from config.config_manager import get_config_manager
+        config_name = request.match_info['config_name']
+        config_manager = get_config_manager()
+        config = config_manager.get_config(config_name)
+
+        if not config:
+            return web.json_response({"status": "error", "error": f"Config '{config_name}' not found"}, status=404)
+
+        return web.json_response({"status": "success", "config": config})
+
+    async def handle_update_config(self, request):
+        """Update a specific config."""
+        from config.config_manager import get_config_manager
+        config_name = request.match_info['config_name']
+        data = await request.json()
+        new_config = data.get('config', {})
+
+        config_manager = get_config_manager()
+        success = config_manager.update_config(config_name, new_config)
+
+        if success:
+            return web.json_response({"status": "success", "message": f"Config '{config_name}' updated"})
+        else:
+            return web.json_response({"status": "error", "error": f"Failed to update '{config_name}'"}, status=500)
+
+    async def handle_reload_config(self, request):
+        """Reload a specific config from disk."""
+        from config.config_manager import get_config_manager
+        config_name = request.match_info['config_name']
+
+        config_manager = get_config_manager()
+        success = config_manager.reload_config(config_name)
+
+        if success:
+            return web.json_response({"status": "success", "message": f"Config '{config_name}' reloaded"})
+        else:
+            return web.json_response({"status": "error", "error": f"Failed to reload '{config_name}'"}, status=500)
+
+    async def handle_reload_all_configs(self, request):
+        """Reload all configs from disk."""
+        from config.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        config_manager.reload_all_configs()
+        return web.json_response({"status": "success", "message": "All configs reloaded"})
+
+    async def handle_get_state(self, request):
+        """Get current robot state."""
+        state = self.state_tracker.get_state()
+        return web.json_response({
+            "status": "success",
+            "state": state,
+            "timestamp": time.time()
+        })
+
+    async def handle_conversation_start(self, request):
+        """Start a conversation with text input."""
+        data = await request.json()
+        text = data.get('text', '').strip()
+
+        if not text:
+            return web.json_response({"status": "error", "error": "No text provided"}, status=400)
+
+        # TODO: Implement conversation flow
+        # This will need to integrate with MCP session or Messages API
+        # based on inference_config.json
+        return web.json_response({
+            "status": "success",
+            "message": "Conversation started",
+            "text": text
+        })

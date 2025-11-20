@@ -6,6 +6,7 @@ Initializes the system, handles startup checks, and runs the main orchestrator.
 import asyncio
 import os
 import sys
+import platform
 from pathlib import Path
 
 # Suppress initial warnings before any other imports
@@ -16,12 +17,12 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['GLOG_minloglevel'] = '3'
 os.environ['TF_CPP_VMODULE'] = 'inference_feedback_manager=0'
 
-# Add snowboy to path for wake word detection
-sys.path.insert(0, str(Path(__file__).parent / "snowboy"))
+# Add snowboy to path for wake word detection (Linux only)
+if platform.system() != "Darwin":
+    sys.path.insert(0, str(Path(__file__).parent / "snowboy"))
 
 from core.app_orchestrator import AppOrchestrator
 from utils.helpers import cleanup_old_mood_files, restore_stderr
-from speech_capture.vosk_readiness_checker import ensure_vosk_ready
 
 async def main():
     """Main entry point with multi-task architecture."""
@@ -30,12 +31,16 @@ async def main():
     # Clean up old mood files before starting
     cleanup_old_mood_files()
 
-    # Check VOSK readiness
-    print("[INFO] Checking VOSK server readiness...")
-    if not await ensure_vosk_ready(timeout=10):
-        print("[WARNING] VOSK server not ready - speech features will be limited")
+    # Check speech server readiness (Linux only)
+    if platform.system() != "Darwin":
+        from speech_capture.vosk_readiness_checker import ensure_vosk_ready
+        print("[INFO] Checking speech server readiness...")
+        if not await ensure_vosk_ready(timeout=10):
+            print("[WARNING] Speech server not ready - features will be limited")
+        else:
+            print("[INFO] Speech server ready")
     else:
-        print("[INFO] VOSK server is ready")
+        print("[INFO] Running in Passive Mode - Hardware Disabled")
 
     print("[INFO] Initializing Application Orchestrator...")
     orchestrator = AppOrchestrator()

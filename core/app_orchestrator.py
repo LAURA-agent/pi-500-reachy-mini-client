@@ -7,6 +7,7 @@ server connection loop, including the offline "Code Mode" fallback.
 
 import asyncio
 import traceback
+import platform
 from colorama import Fore, Style, init
 
 from mcp.client.sse import sse_client
@@ -19,12 +20,9 @@ from communication.api_server import APIServer
 from core.interaction_loop import InteractionLoop
 from core.lifecycle_manager import LifecycleManager
 from system.audio_manager import AudioManager
-from display.display_manager import DisplayManager
-from system.input_manager import InputManager
+from state_tracker import StateTracker
 from system.notification_manager import NotificationManager
 from system.conversation_manager import ConversationManager
-from speech_capture.speech_processor import SpeechProcessor
-from speech_capture.vosk_websocket_adapter import VoskTranscriber
 from communication.client_tts_handler import TTSHandler
 from system.system_command_manager import SystemCommandManager
 from utils.helpers import SOUND_BASE_PATH
@@ -34,15 +32,12 @@ init()
 
 class AppOrchestrator:
     def __init__(self):
-        self.state_tracker = DisplayManager()
+        self.state_tracker = StateTracker()
         self.audio_manager = AudioManager()
         self.tts_handler = TTSHandler()
-        self.input_manager = InputManager(self.audio_manager, self.audio_manager.wakeword_queue)
+        self.input_manager = None  # No hardware input
+        self.speech_processor = None  # No local transcription
         self.robot_controller = RobotController(self.state_tracker, self.input_manager)
-        self.transcriber = VoskTranscriber()
-        self.speech_processor = SpeechProcessor(
-            self.audio_manager, self.transcriber, None, self.audio_manager.vad_queue
-        )
         self.conversation_manager = ConversationManager(
             self.speech_processor, self.robot_controller.audio_coordinator, self.tts_handler,
             client_settings, self.robot_controller.movement_manager
@@ -68,8 +63,6 @@ class AppOrchestrator:
             audio_manager=self.audio_manager, state_tracker=self.state_tracker,
             input_manager=self.input_manager
         )
-        self.input_manager.initialize_keyboard()
-        self.speech_processor.keyboard_device = self.input_manager.keyboard_device
 
     async def run(self):
         await self.lifecycle_manager.startup()

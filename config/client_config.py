@@ -3,9 +3,14 @@
 import json
 from pathlib import Path
 import copy
+import platform
 
 # ========== Paths ==========
-BASE_PATH = Path("/home/user/reachy/pi_reachy_deployment")
+# Detect OS and set appropriate base path
+if platform.system() == "Darwin":  # macOS
+    BASE_PATH = Path(__file__).parent.parent  # Use the client directory itself
+else:  # Linux (Raspberry Pi)
+    BASE_PATH = Path("/home/user/reachy/pi_reachy_deployment")
 SOUND_BASE_PATH = BASE_PATH / "assets/sounds"
 
 DISPLAY_SVG_PATH_DEFAULT = BASE_PATH / "svg files/silhouette.svg"
@@ -41,14 +46,7 @@ DEFAULT_PIPER_MODEL_PATH = str(BASE_PATH / "piper_models/en_US-ljspeech-low.onnx
 DEFAULT_PIPER_VOICE_NAME = "ljspeech"
 
 # ========== STT Settings ==========
-# --- MODIFIED: Define Vosk Model Paths ---
-VOSK_MODELS_BASE_PATH = BASE_PATH / "models"
-VOSK_MODEL_PATHS_AVAILABLE = {
-    "small": str(VOSK_MODELS_BASE_PATH / "vosk-model-small-en-us-0.15"),
-    "medium": str(VOSK_MODELS_BASE_PATH / "vosk-model-en-us-0.22"),
-    # Add other Vosk models here if you have them, e.g., "en-in" for Indian English
-}
-VOSK_MODEL_SIZE_DEFAULT = "small" # Set your preferred default size here
+# Speech-to-text handled via API - no local models
 
 
 # ========== Device/Server & Misc ==========
@@ -90,11 +88,10 @@ MOOD_COLORS = {
 
 # ========== Client Settings Management (Loaded at runtime) ==========
 _DEFAULT_CLIENT_SETTINGS = {
-    "enable_display_audio_visualizer": True,    
+    "enable_display_audio_visualizer": True,
     "tts_mode": "api",
     "api_tts_provider": "elevenlabs",
-    "stt_mode": "local",
-    "vosk_model_size": VOSK_MODEL_SIZE_DEFAULT, # --- NEW: Vosk model size setting ---
+    "stt_mode": "api",
 
     "SERVER_URL": SERVER_URL_DEFAULT,
     "DEVICE_ID": DEVICE_ID_DEFAULT,
@@ -184,8 +181,7 @@ def load_client_settings():
     # Ensure other global variables in this module are set from loaded settings for client script imports
     global SERVER_URL, DEVICE_ID, KEEP_TEMP_AUDIO_FILES, AUDIO_SAMPLE_RATE, SNOWBOY_AUDIO_CHUNK_SIZE
     global WAKEWORD_MODEL_DIR, WAKEWORD_RESOURCE_FILE, WAKE_WORDS_AND_SENSITIVITIES
-    global VOSK_MODEL_PATH # --- MODIFIED ---
-    
+
     SERVER_URL = client_settings.get("SERVER_URL", SERVER_URL_DEFAULT)
     DEVICE_ID = client_settings.get("DEVICE_ID", DEVICE_ID_DEFAULT)
     KEEP_TEMP_AUDIO_FILES = client_settings.get("KEEP_TEMP_AUDIO_FILES", KEEP_TEMP_AUDIO_FILES_DEFAULT)
@@ -194,9 +190,6 @@ def load_client_settings():
     WAKEWORD_MODEL_DIR = Path(client_settings.get("WAKEWORD_MODEL_DIR", WAKEWORD_MODEL_DIR_DEFAULT))
     WAKEWORD_RESOURCE_FILE = Path(client_settings.get("WAKEWORD_RESOURCE_FILE", WAKEWORD_RESOURCE_FILE_DEFAULT))
     WAKE_WORDS_AND_SENSITIVITIES = client_settings.get("WAKE_WORDS_AND_SENSITIVITIES", WAKE_WORDS_AND_SENSITIVITIES_DEFAULT)
-    
-    # --- MODIFIED: VOSK_MODEL_PATH is now derived from VOSK_MODEL_SIZE ---
-    VOSK_MODEL_PATH = get_vosk_model_path() 
 
     return client_settings
 
@@ -268,43 +261,6 @@ def get_mood_color_config(mood_name_str: str) -> dict:
     """
     return MOOD_COLORS.get(str(mood_name_str).lower(), MOOD_COLORS["default"])
 
-def get_vosk_model_path() -> Path:
-    """
-    Returns the Path to the selected Vosk model directory based on VOSK_MODEL_SIZE.
-    """
-    model_size = client_settings.get("vosk_model_size", VOSK_MODEL_SIZE_DEFAULT)
-    path_str = VOSK_MODEL_PATHS_AVAILABLE.get(model_size)
-    
-    if path_str:
-        model_path = Path(path_str)
-        if model_path.exists():
-            return model_path
-        else:
-            print(f"[CONFIG ERROR] Vosk model '{model_size}' path does not exist: {model_path}. Falling back to default small model.")
-            # Fallback to small if requested size not found on disk
-            fallback_path_str = VOSK_MODEL_PATHS_AVAILABLE.get(VOSK_MODEL_SIZE_DEFAULT)
-            if fallback_path_str:
-                fallback_path = Path(fallback_path_str)
-                if fallback_path.exists():
-                    return fallback_path
-                else:
-                    print(f"[CONFIG FATAL] Default Vosk model '{VOSK_MODEL_SIZE_DEFAULT}' path also does not exist: {fallback_path}.")
-                    raise FileNotFoundError(f"Neither requested Vosk model '{model_size}' nor default '{VOSK_MODEL_SIZE_DEFAULT}' found.")
-            else:
-                raise ValueError("VOSK_MODEL_SIZE_DEFAULT not found in VOSK_MODEL_PATHS_AVAILABLE. Config error.")
-    else:
-        print(f"[CONFIG ERROR] Vosk model size '{model_size}' not defined in VOSK_MODEL_PATHS_AVAILABLE. Using default small model.")
-        # Fallback to small if size not defined in map
-        fallback_path_str = VOSK_MODEL_PATHS_AVAILABLE.get(VOSK_MODEL_SIZE_DEFAULT)
-        if fallback_path_str:
-            fallback_path = Path(fallback_path_str)
-            if fallback_path.exists():
-                return fallback_path
-            else:
-                raise FileNotFoundError(f"Vosk model size '{model_size}' not defined, and default '{VOSK_MODEL_SIZE_DEFAULT}' also not found at {fallback_path}.")
-        else:
-            raise ValueError("VOSK_MODEL_SIZE_DEFAULT not found in VOSK_MODEL_PATHS_AVAILABLE. Config error.")
-
 def get_network_appropriate_server_url() -> str:
     """
     Detect current WiFi network and return appropriate server URL.
@@ -337,18 +293,17 @@ def get_network_appropriate_server_url() -> str:
 
 
 # --- Initialize settings and global variables on module import ---
-# These global variables are directly imported by pi500_mcp_client.py
+# These global variables are directly imported by client scripts
 # and should reflect the loaded client_settings.
 # They are declared and then populated by load_client_settings().
 SERVER_URL = None
 DEVICE_ID = None
 KEEP_TEMP_AUDIO_FILES = None
-VAD_SETTINGS = {} 
+VAD_SETTINGS = {}
 AUDIO_SAMPLE_RATE = None
 SNOWBOY_AUDIO_CHUNK_SIZE = None
 WAKEWORD_MODEL_DIR = None
 WAKEWORD_RESOURCE_FILE = None
 WAKE_WORDS_AND_SENSITIVITIES = None
-VOSK_MODEL_PATH = None # This will now be set by get_vosk_model_path()
 
 load_client_settings() # Call this to load settings on module import

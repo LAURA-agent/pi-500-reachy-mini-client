@@ -1,0 +1,21 @@
+{
+    "breathing": {
+        "enabled": true,
+        "amplitude": 1.0,
+        "frequency": 0.15
+    },
+    "face_tracking": {
+        "enabled": true,
+        "smoothing": 0.3,
+        "max_offset": 15.0
+    },
+    "speech_motion": {
+        "enabled": true,
+        "antenna_amplitude": 0.8
+    },
+    "sleep_pose": {
+        "position": [0, 0, -2],
+        "orientation": [0, -30, 0],
+        "antenna": [-1, -1]
+    }
+}

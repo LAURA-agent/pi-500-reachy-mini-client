@@ -23,10 +23,59 @@ class StateTracker:
     ERROR = "error"
     CODE = "code"
     EXECUTION = "execution"
+    POUT = "pout"
     BLUETOOTH_READY = "bluetooth_ready"
     BLUETOOTH_PLAYING = "bluetooth_playing"
 
-    VALID_STATES = {SLEEP, IDLE, LISTENING, THINKING, SPEAKING, ERROR, CODE, EXECUTION, BLUETOOTH_READY, BLUETOOTH_PLAYING}
+    VALID_STATES = {SLEEP, IDLE, LISTENING, THINKING, SPEAKING, ERROR, CODE, EXECUTION, POUT, BLUETOOTH_READY, BLUETOOTH_PLAYING}
+
+    # State configurations for behavior control (passive mode - no wake words)
+    STATE_CONFIGS = {
+        "sleep": {
+            "face_tracking": False,
+            "breathing": {"enabled": False}
+        },
+        "idle": {
+            "face_tracking": True,
+            "breathing": {"enabled": True, "amplitude_scale": 1.0, "frequency_scale": 1.0}
+        },
+        "listening": {
+            "face_tracking": False,
+            "breathing": {"enabled": False}
+        },
+        "thinking": {
+            "face_tracking": False,
+            "breathing": {"enabled": False}
+        },
+        "speaking": {
+            "face_tracking": False,
+            "breathing": {"enabled": False}
+        },
+        "error": {
+            "face_tracking": False,
+            "breathing": {"enabled": True, "amplitude_scale": 1.0, "frequency_scale": 1.0}
+        },
+        "code": {
+            "face_tracking": False,
+            "breathing": {"enabled": False}
+        },
+        "execution": {
+            "face_tracking": False,
+            "breathing": {"enabled": False}
+        },
+        "pout": {
+            "face_tracking": False,
+            "breathing": {"enabled": False}
+        },
+        "bluetooth_ready": {
+            "face_tracking": False,
+            "breathing": {"enabled": True, "amplitude_scale": 0.7, "frequency_scale": 1.0}
+        },
+        "bluetooth_playing": {
+            "face_tracking": False,
+            "breathing": {"enabled": False}
+        },
+    }
 
     def __init__(self):
         """Initialize state tracker."""

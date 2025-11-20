@@ -1,0 +1,13 @@
+{
+    "active_provider": "elevenlabs_scribe",
+    "elevenlabs_scribe": {
+        "api_key_env": "ELEVENLABS_API_KEY",
+        "model": "scribe",
+        "language": "en"
+    },
+    "whisper_hf": {
+        "space_url": "openai/whisper",
+        "task": "transcribe",
+        "model": "base"
+    }
+}

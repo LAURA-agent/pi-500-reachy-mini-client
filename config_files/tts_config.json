@@ -1,0 +1,15 @@
+{
+    "active_provider": "elevenlabs",
+    "elevenlabs": {
+        "api_key_env": "ELEVENLABS_API_KEY",
+        "voice_id": "qEwI395unGwWV1dn3Y65",
+        "model": "eleven_flash_v2_5",
+        "stability": 0.5,
+        "similarity_boost": 0.75
+    },
+    "local_tts": {
+        "engine": "piper",
+        "model_path": "",
+        "voice_name": "ljspeech"
+    }
+}

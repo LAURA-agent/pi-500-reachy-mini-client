@@ -18,12 +18,12 @@ from speech_offset import SpeechOffsetPlayer
 from speech_analyzer import SpeechAnalyzer
 from system.audio_coordinator import AudioCoordinator
 from system.audio_manager import AudioManager
-from display.display_manager import DisplayManager
+from state_tracker import StateTracker
 from system.input_manager import InputManager
 from bluetooth_buffered_capturer import BluetoothBufferedCapturer
 
 class RobotController:
-    def __init__(self, state_tracker: DisplayManager, input_manager: InputManager):
+    def __init__(self, state_tracker: StateTracker, input_manager: InputManager):
         print("[INFO] RobotController: Initializing Reachy hardware components...")
         self.daemon_client = DaemonClient("http://localhost:8100")
         self.media_manager = DaemonMediaWrapper("http://localhost:8100")
@@ -37,7 +37,7 @@ class RobotController:
             head_tracker=self.head_tracker,
             daemon_client=self.daemon_client,
             movement_manager=None,
-            debug_window=False
+            debug_window=True  # Enable debug visualization window
         )
         self.movement_manager = MovementManager(
             current_robot=self.daemon_client,
@@ -176,21 +176,18 @@ class RobotController:
 
         config = StateTracker.STATE_CONFIGS.get(new_state, {})
         breathing_config = config.get("breathing", {})
+
+        # Control breathing based on state config
         if new_state not in ["speaking", "sleep", "pout"]:
             if breathing_config.get("enabled", False):
                 self.movement_manager.resume_breathing()
             else:
                 self.movement_manager.pause_breathing()
 
+        # Control face tracking based on state config
         self.camera_worker.set_head_tracking_enabled(config.get("face_tracking", False))
 
-        # Wake Word Detection Toggle
-        if config.get("wake_word_detection", False):
-            self.input_manager.restart_wake_word_detection()
-            print(f"[STATE] Wake words: enabled")
-        else:
-            self.input_manager.stop_wake_word_detection()
-            print(f"[STATE] Wake words: disabled")
+        # Passive mode: no wake word detection (API-driven via Gradio UI)
 
     def enter_pout_mode(self, initial_body_yaw_deg: float = 0.0, entry_speed: str = "slow"):
         if self._in_pout_mode: return

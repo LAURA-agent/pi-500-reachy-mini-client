@@ -4,11 +4,18 @@ import asyncio
 import time
 import random
 import select
+import platform
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from evdev import InputDevice, list_devices, ecodes
 from colorama import Fore
+
+try:
+    from evdev import InputDevice, list_devices, ecodes
+except ImportError:
+    InputDevice = None
+    list_devices = None
+    ecodes = None
 
 # Wake word sensitivity settings (0.0-1.0, higher = more sensitive but more false positives)
 WAKE_WORDS = {

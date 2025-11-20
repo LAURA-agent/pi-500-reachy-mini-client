@@ -1,0 +1,15 @@
+{
+    "active_backend": "mcp_server",
+    "mcp_server": {
+        "url": "http://174.165.47.128:8765",
+        "device_id": "reachy_mini_pi500",
+        "timeout": 30
+    },
+    "messages_api": {
+        "provider": "anthropic",
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "model": "claude-sonnet-4-5-20250929",
+        "max_tokens": 4096,
+        "temperature": 1.0
+    }
+}
