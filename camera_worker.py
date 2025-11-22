@@ -75,9 +75,9 @@ class CameraWorker:
         self.face_tracking_offsets: List[float] = [
             0.0,
             0.0,
+            0.01,  # 1cm z-lift (neutral position)
             0.0,
-            0.0,
-            0.0,
+            np.deg2rad(-10.0),  # -10° pitch (looking up slightly, neutral position)
             0.0,
         ]  # x, y, z, roll, pitch, yaw
         self.face_tracking_lock = threading.Lock()
@@ -116,6 +116,9 @@ class CameraWorker:
         self._last_breathing_roll = 0.0  # Track previous roll for edge detection
         self._roll_away_from_zero = False  # Start False to require breathing motion before first sample
         self._last_sample_time = time.time()  # Initialize to current time to prevent immediate fallback
+
+        # Last IK translation (initialized to neutral position)
+        self._last_translation = np.array([0.0, 0.0, 0.01], dtype=np.float32)  # Neutral: z=0.01m lift
 
         # World-frame target for body-follow (separate from body-relative offsets)
         self._world_frame_target_yaw: float | None = None  # Absolute world yaw to face target
@@ -258,14 +261,8 @@ class CameraWorker:
         neutral_pose[:3, :3] = neutral_rotation.as_matrix()
         self.previous_head_tracking_state = self.is_head_tracking_enabled
 
-        # Move to neutral position on startup
-        if self.daemon_client:
-            try:
-                logger.info("Moving to neutral head position on startup")
-                self.daemon_client.set_target(head=neutral_pose)
-                time.sleep(0.5)  # Give robot time to reach neutral
-            except Exception as e:
-                logger.warning(f"Failed to move to neutral position: {e}")
+        # Neutral pose is used for interpolation reference only
+        # Movement manager will handle all positioning through composition
 
         # Flush stale frames from daemon (clear any frames from previous session)
         logger.debug("Flushing stale frames from camera...")
@@ -343,26 +340,24 @@ class CameraWorker:
                             self._yaw_interpolation_start = None
                             self._yaw_interpolation_start_time = None
 
-                    # Update face tracking offsets EVERY frame with interpolated pitch AND yaw
-                    # Face tracking uses ONLY rotations (roll, pitch, yaw), not translations
-                    # The Stewart platform achieves target orientation through rotation alone
+                    # Update face tracking offsets EVERY frame with interpolated values
+                    # Use full pose from IK (translation + rotation)
                     # ONLY update if NOT in neutral recovery mode (prevents race condition)
                     # AND only update if head tracking is enabled (preserves position during speech)
                     if self.interpolation_start_time is None and self.is_head_tracking_enabled:
                         with self.face_tracking_lock:
                             self.face_tracking_offsets = [
-                                0.0,  # x translation (not used for face tracking)
-                                0.0,  # y translation (not used for face tracking)
-                                0.0,  # z translation (not used for face tracking)
+                                self._last_translation[0],
+                                self._last_translation[1],
+                                self._last_translation[2],
                                 self._last_roll,
                                 self._current_interpolated_pitch,
                                 self._current_interpolated_yaw,
                             ]
 
-                    # Time-based sampling: every 1.0 second (prevents oscillation)
-                    # With 2s interpolation duration, this allows movements to mostly complete
-                    # before starting new ones, avoiding constant target changes
-                    should_sample = (current_time - self._last_sample_time) >= 1.0
+                    # Time-based sampling: every 0.1 second (10Hz for responsive tracking)
+                    # Real-time sampling with short interpolation prevents phase lag
+                    should_sample = (current_time - self._last_sample_time) >= 0.1
 
                     if not should_sample:
                         # Not time to sample yet - skip this frame
@@ -420,8 +415,16 @@ class CameraWorker:
                         translation = target_pose[:3, 3]
                         rotation = R.from_matrix(target_pose[:3, :3]).as_euler("xyz", degrees=False)
 
+                        # Store translation for use in offsets
+                        self._last_translation = translation
+
+                        # DEBUG: Log daemon IK output
+                        logger.info(f"[IK] pixel=({u_pixel}, {v_pixel}) daemon_pitch={np.rad2deg(rotation[1]):.1f}° (before invert)")
+
                         # 1. Interpret Pitch: Invert daemon's "positive = down" to robot's "positive = up"
                         pitch = -rotation[1]
+
+                        logger.info(f"[IK] after invert: pitch={np.rad2deg(pitch):.1f}°")
 
                         # The previous upper limit of +5.0 was too restrictive. A symmetrical range is a better default.
                         pitch = np.clip(pitch, np.deg2rad(-25.0), np.deg2rad(5.0))
@@ -513,15 +516,15 @@ class CameraWorker:
                             translation = interpolated_pose[:3, 3]
                             rotation = R.from_matrix(interpolated_pose[:3, :3]).as_euler("xyz", degrees=False)
 
-                            # Thread-safe update: interpolating back to zero offsets (neutral)
-                            # Face tracking offsets should go to zero when face is lost
+                            # Thread-safe update: interpolating back to neutral position
+                            # Face tracking offsets interpolate to neutral (0.01m z-lift, -10° pitch)
                             with self.face_tracking_lock:
                                 self.face_tracking_offsets = [
-                                    0.0,  # x translation
-                                    0.0,  # y translation
-                                    0.0,  # z translation
+                                    translation[0],  # x translation (interpolating to 0)
+                                    translation[1],  # y translation (interpolating to 0)
+                                    translation[2],  # z translation (interpolating to 0.01m)
                                     rotation[0],  # roll (interpolating to 0)
-                                    rotation[1],  # pitch (interpolating to 0)
+                                    rotation[1],  # pitch (interpolating to -10°)
                                     rotation[2],  # yaw (interpolating to 0)
                                 ]
 

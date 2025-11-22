@@ -126,14 +126,15 @@ class BreathingMove(Move):  # type: ignore
         self.interpolation_duration = interpolation_duration
 
         # Neutral positions for breathing base
-        # Always use true neutral position (0, 0, 0.01) for breathing baseline
-        # This ensures breathing sway rotates correctly in world coordinates
+        # Extract current XYZ from start pose - only interpolate rotation to pitch=-10°
+        # This prevents jerky startup from XYZ position changes and matches daemon IK expectations
+        current_xyz = interpolation_start_pose[:3, 3]
         self.neutral_head_pose = create_head_pose(
-            x=0.0,      # True neutral - no forward/back offset
-            y=0.0,      # True neutral - no left/right offset
-            z=0.01,     # 1.0cm lift to avoid low position
+            x=current_xyz[0],
+            y=current_xyz[1],
+            z=current_xyz[2],  # Keep current Z height (critical for daemon IK consistency)
             roll=0.0,
-            pitch=0.0,  # Look straight ahead
+            pitch=-10.0,  # Look up slightly (matches camera neutral for daemon IK)
             yaw=0.0,
             degrees=True,
             mm=False
@@ -280,13 +281,48 @@ class BreathingMove(Move):  # type: ignore
 
 
 def combine_full_body(primary_pose: FullBodyPose, secondary_pose: FullBodyPose) -> FullBodyPose:
-    """Combine primary and secondary full body poses."""
+    """Combine primary and secondary full body poses using manual component addition.
+
+    Component ownership:
+    - Breathing (primary): Y sway, roll
+    - Face tracking + Speech (secondary): X, Z, pitch, yaw
+    - Result: final_y = secondary_y + primary_y, final_roll = primary_roll, others from secondary
+    """
     primary_head, primary_antennas, primary_body_yaw = primary_pose
     secondary_head, secondary_antennas, secondary_body_yaw = secondary_pose
 
-    # The secondary pose (face tracking) is the base, and the primary pose (breathing) is the offset.
-    combined_head = compose_world_offset(secondary_head, primary_head, reorthonormalize=True)
+    # Extract components from primary (breathing or discrete move)
+    primary_x = primary_head[0, 3]
+    primary_y = primary_head[1, 3]
+    primary_z = primary_head[2, 3]
+    primary_rotation = R.from_matrix(primary_head[:3, :3])
+    primary_roll, primary_pitch, primary_yaw = primary_rotation.as_euler('xyz', degrees=False)
 
+    # Extract components from secondary (face tracking + speech)
+    secondary_x = secondary_head[0, 3]
+    secondary_y = secondary_head[1, 3]
+    secondary_z = secondary_head[2, 3]
+    secondary_rotation = R.from_matrix(secondary_head[:3, :3])
+    secondary_roll, secondary_pitch, secondary_yaw = secondary_rotation.as_euler('xyz', degrees=False)
+
+    # Manual component addition (selective composition)
+    # Breathing controls: Y sway, roll
+    # Face+Speech control: X, Z, pitch, yaw
+    final_x = secondary_x           # Face tracking controls X
+    final_y = secondary_y + primary_y  # Face base + breathing Y sway
+    final_z = secondary_z           # Face tracking controls Z (0.01m neutral)
+    final_roll = primary_roll       # Breathing controls roll
+    final_pitch = secondary_pitch   # Face+speech control pitch
+    final_yaw = secondary_yaw       # Face tracking controls yaw
+
+    # Create final head pose from combined components
+    combined_head = create_head_pose(
+        final_x, final_y, final_z,
+        final_roll, final_pitch, final_yaw,
+        degrees=False, mm=False
+    )
+
+    # Antennas: Simple addition (already correct)
     combined_antennas = (
         primary_antennas[0] + secondary_antennas[0],
         primary_antennas[1] + secondary_antennas[1],
@@ -356,7 +392,8 @@ class MovementManager:
         self._now = time.monotonic
         self.state = MovementState()
         self.state.last_activity_time = self._now()
-        neutral_pose = create_head_pose(0.0, 0.0, 0.01, 0.0, 0.0, 0.0, degrees=True, mm=False)
+        # Last primary pose: zero offset (breathing provides relative motion, face tracking provides base z=0.01m)
+        neutral_pose = create_head_pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, degrees=True, mm=False)
         self.state.last_primary_pose = (neutral_pose, (0.0, 0.0), 0.0)
         self.move_queue: deque[Move] = deque()
         self.idle_inactivity_delay = 0.3
@@ -405,8 +442,8 @@ class MovementManager:
         self._pending_face_offsets: Tuple[float, float, float, float, float, float] = (0.0,) * 6
         self._face_offsets_dirty = False
         # Low-pass filter for face tracking to prevent 100Hz jitter with breathing
-        self._smoothed_face_offsets: List[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        self._face_tracking_smoothing = 0.92  # 0.92 = smooth, 0.0 = instant (no filter)
+        self._smoothed_face_offsets: List[float] = [0.0, 0.0, 0.01, 0.0, np.deg2rad(-10.0), 0.0]  # Initialize to neutral
+        self._face_tracking_smoothing = 0.92  # 0.92 = heavy smoothing (8% new value per frame), 0.0 = instant (no filter)
         self._shared_state_lock = threading.Lock()
         self._shared_last_activity_time = self.state.last_activity_time
         self._shared_is_listening = self._is_listening
@@ -759,6 +796,14 @@ class MovementManager:
 
     def _issue_control_command(self, head: NDArray[np.float32], antennas: Tuple[float, float], body_yaw: float) -> None:
         try:
+            # DEBUG: Log what's actually being sent to daemon
+            if not hasattr(self, '_daemon_debug_counter'):
+                self._daemon_debug_counter = 0
+            self._daemon_debug_counter += 1
+            if self._daemon_debug_counter % 100 == 0:
+                rotation = R.from_matrix(head[:3, :3]).as_euler('xyz', degrees=False)
+                logger.info(f"[DAEMON CMD] pitch={np.rad2deg(rotation[1]):.1f}° z={head[2,3]:.4f}m antennas=({antennas[0]:.2f}, {antennas[1]:.2f})")
+
             self.current_robot.set_target(head=head, antennas=antennas, body_yaw=body_yaw)
             self._last_commanded_pose = clone_full_body_pose((head, antennas, body_yaw))
             # Reset failure counter on success
@@ -806,7 +851,9 @@ class MovementManager:
                 (1.0 - alpha) * raw_offsets[i]
             )
 
-        self.state.face_tracking_offsets = tuple(self._smoothed_face_offsets)
+        # Thread-safe write: prevent pending offsets from overwriting smoothed values
+        with self._face_offsets_lock:
+            self.state.face_tracking_offsets = tuple(self._smoothed_face_offsets)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive(): return
